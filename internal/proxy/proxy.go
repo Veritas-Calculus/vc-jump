@@ -219,9 +219,12 @@ func loadPrivateKey(keyPath string) (ssh.Signer, error) {
 // If knownHostsPath is empty, it uses the default ~/.ssh/known_hosts file.
 func createHostKeyCallback(knownHostsPath string, insecureIgnore bool) (ssh.HostKeyCallback, error) {
 	// If insecure mode is explicitly enabled, skip host key verification.
-	// This should only be used for trusted internal networks.
+	// This should only be used for trusted internal networks where the admin
+	// has explicitly configured insecure_ignore_host_key: true in the host config.
+	// This is a deliberate security trade-off for environments where known_hosts
+	// management is impractical (e.g., dynamic cloud environments).
 	if insecureIgnore {
-		return ssh.InsecureIgnoreHostKey(), nil //nolint:gosec // G106: intentionally allowed when explicitly configured by admin
+		return ssh.InsecureIgnoreHostKey(), nil // #nosec G106 -- intentionally allowed when explicitly configured by admin
 	}
 
 	if knownHostsPath == "" {
