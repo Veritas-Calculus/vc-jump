@@ -6,7 +6,6 @@ version: 2
 before:
   hooks:
     - go mod tidy
-    - go generate ./...
 
 builds:
   - id: vc-jump
@@ -26,9 +25,12 @@ builds:
         goarch: arm64
     ldflags:
       - -s -w
+      - -extldflags "-static"
       - -X main.version={{.Version}}
       - -X main.commit={{.Commit}}
       - -X main.date={{.Date}}
+    flags:
+      - -trimpath
 
 archives:
   - id: default
