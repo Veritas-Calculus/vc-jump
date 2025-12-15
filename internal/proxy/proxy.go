@@ -79,7 +79,7 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 	}
 
 	// Create host key callback.
-	hostKeyCallback, err := createHostKeyCallback(host.KnownHostsPath)
+	hostKeyCallback, err := createHostKeyCallback(host.KnownHostsPath, host.InsecureIgnoreHostKey)
 	if err != nil {
 		return fmt.Errorf("failed to create host key callback: %w", err)
 	}
@@ -215,8 +215,16 @@ func loadPrivateKey(keyPath string) (ssh.Signer, error) {
 }
 
 // createHostKeyCallback creates a host key callback function.
+// If insecureIgnore is true, it returns a callback that accepts any host key (use only for trusted networks).
 // If knownHostsPath is empty, it uses the default ~/.ssh/known_hosts file.
-func createHostKeyCallback(knownHostsPath string) (ssh.HostKeyCallback, error) {
+func createHostKeyCallback(knownHostsPath string, insecureIgnore bool) (ssh.HostKeyCallback, error) {
+	// If insecure mode is explicitly enabled, skip host key verification.
+	// This should only be used for trusted internal networks.
+	if insecureIgnore {
+		//nolint:gosec // InsecureIgnoreHostKey is intentionally allowed when explicitly configured.
+		return ssh.InsecureIgnoreHostKey(), nil
+	}
+
 	if knownHostsPath == "" {
 		homeDir, err := os.UserHomeDir()
 		if err != nil {
