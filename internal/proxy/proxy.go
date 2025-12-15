@@ -44,54 +44,23 @@ func (p *Proxy) Connect(ctx context.Context, channel io.ReadWriteCloser, host co
 
 // ConnectWithOptions establishes an SSH connection with additional options.
 func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteCloser, host config.HostConfig, ptyReq *PTYRequest, opts *ConnectOptions) error {
-	if host.Addr == "" {
-		return errors.New("host address cannot be empty")
-	}
-	if host.Port <= 0 || host.Port > 65535 {
-		return errors.New("invalid host port")
+	if err := validateHost(host); err != nil {
+		return err
 	}
 
 	// Load private key for target host.
-	var key ssh.Signer
-	var err error
-
-	switch {
-	case opts != nil && opts.PrivateKeyData != "":
-		// Use provided private key data.
-		key, err = ssh.ParsePrivateKey([]byte(opts.PrivateKeyData))
-		if err != nil {
-			return fmt.Errorf("failed to parse private key: %w", err)
-		}
-	case host.KeyPath != "":
-		// Load from file path.
-		key, err = loadPrivateKey(host.KeyPath)
-		if err != nil {
-			return fmt.Errorf("failed to load private key: %w", err)
-		}
-	default:
-		return errors.New("no SSH key configured for target host")
+	key, err := p.loadSSHKey(host, opts)
+	if err != nil {
+		return err
 	}
 
 	// Determine target user.
-	targetUser := getUserForHost(host)
-	if opts != nil && opts.TargetUser != "" {
-		targetUser = opts.TargetUser
-	}
-
-	// Create host key callback.
-	hostKeyCallback, err := createHostKeyCallback(host.KnownHostsPath, host.InsecureIgnoreHostKey)
-	if err != nil {
-		return fmt.Errorf("failed to create host key callback: %w", err)
-	}
+	targetUser := p.getTargetUser(host, opts)
 
 	// Create SSH client config.
-	clientConfig := &ssh.ClientConfig{
-		User: targetUser,
-		Auth: []ssh.AuthMethod{
-			ssh.PublicKeys(key),
-		},
-		HostKeyCallback: hostKeyCallback,
-		Timeout:         30 * time.Second,
+	clientConfig, err := p.createClientConfig(host, targetUser, key)
+	if err != nil {
+		return err
 	}
 
 	// Connect to target host.
@@ -102,32 +71,99 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 	}
 	defer func() { _ = client.Close() }()
 
-	// Create session.
+	// Create and run session.
+	return p.runSession(ctx, client, channel, ptyReq)
+}
+
+func validateHost(host config.HostConfig) error {
+	if host.Addr == "" {
+		return errors.New("host address cannot be empty")
+	}
+	if host.Port <= 0 || host.Port > 65535 {
+		return errors.New("invalid host port")
+	}
+	return nil
+}
+
+func (p *Proxy) loadSSHKey(host config.HostConfig, opts *ConnectOptions) (ssh.Signer, error) {
+	switch {
+	case opts != nil && opts.PrivateKeyData != "":
+		key, err := ssh.ParsePrivateKey([]byte(opts.PrivateKeyData))
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
+		return key, nil
+	case host.KeyPath != "":
+		key, err := loadPrivateKey(host.KeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load private key: %w", err)
+		}
+		return key, nil
+	default:
+		return nil, errors.New("no SSH key configured for target host")
+	}
+}
+
+func (p *Proxy) getTargetUser(host config.HostConfig, opts *ConnectOptions) string {
+	if opts != nil && opts.TargetUser != "" {
+		return opts.TargetUser
+	}
+	return getUserForHost(host)
+}
+
+func (p *Proxy) createClientConfig(host config.HostConfig, user string, key ssh.Signer) (*ssh.ClientConfig, error) {
+	hostKeyCallback, err := createHostKeyCallback(host.KnownHostsPath, host.InsecureIgnoreHostKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create host key callback: %w", err)
+	}
+
+	return &ssh.ClientConfig{
+		User: user,
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(key),
+		},
+		HostKeyCallback: hostKeyCallback,
+		Timeout:         30 * time.Second,
+	}, nil
+}
+
+func (p *Proxy) runSession(ctx context.Context, client *ssh.Client, channel io.ReadWriteCloser, ptyReq *PTYRequest) error {
 	session, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 	defer func() { _ = session.Close() }()
 
-	// Request PTY if needed.
-	if ptyReq != nil {
-		modes := ssh.TerminalModes{
-			ssh.ECHO:          1,
-			ssh.TTY_OP_ISPEED: 14400,
-			ssh.TTY_OP_OSPEED: 14400,
-		}
-
-		term := ptyReq.Term
-		if term == "" {
-			term = "xterm-256color"
-		}
-
-		if err := session.RequestPty(term, int(ptyReq.Height), int(ptyReq.Width), modes); err != nil {
-			return fmt.Errorf("failed to request pty: %w", err)
-		}
+	if err := p.setupPTY(session, ptyReq); err != nil {
+		return err
 	}
 
-	// Connect stdin/stdout/stderr.
+	return p.proxyIO(ctx, session, channel)
+}
+
+func (p *Proxy) setupPTY(session *ssh.Session, ptyReq *PTYRequest) error {
+	if ptyReq == nil {
+		return nil
+	}
+
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}
+
+	term := ptyReq.Term
+	if term == "" {
+		term = "xterm-256color"
+	}
+
+	if err := session.RequestPty(term, int(ptyReq.Height), int(ptyReq.Width), modes); err != nil {
+		return fmt.Errorf("failed to request pty: %w", err)
+	}
+	return nil
+}
+
+func (p *Proxy) proxyIO(ctx context.Context, session *ssh.Session, channel io.ReadWriteCloser) error {
 	stdin, err := session.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("failed to create stdin pipe: %w", err)
@@ -143,40 +179,33 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 		return fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
-	// Start shell.
 	if err := session.Shell(); err != nil {
 		return fmt.Errorf("failed to start shell: %w", err)
 	}
 
-	// Proxy I/O.
 	done := make(chan error, 3)
 
-	// Channel -> remote stdin.
 	go func() {
 		_, err := io.Copy(stdin, channel)
 		_ = stdin.Close()
 		done <- err
 	}()
 
-	// Remote stdout -> channel.
 	go func() {
 		_, err := io.Copy(channel, stdout)
 		done <- err
 	}()
 
-	// Remote stderr -> channel.
 	go func() {
 		_, err := io.Copy(channel, stderr)
 		done <- err
 	}()
 
-	// Wait for session to end or context cancellation.
 	select {
 	case <-ctx.Done():
 		_ = session.Close()
 		return ctx.Err()
 	case err := <-done:
-		// Wait for session to finish.
 		_ = session.Wait()
 		if err != nil && !errors.Is(err, io.EOF) && !isClosedError(err) {
 			return err

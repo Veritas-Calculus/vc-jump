@@ -32,9 +32,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("vc-jump %s\n", version)
-		fmt.Printf("  commit: %s\n", commit)
-		fmt.Printf("  built:  %s\n", date)
+		printVersion()
 		os.Exit(0)
 	}
 
@@ -44,45 +42,9 @@ func main() {
 	}
 
 	// Initialize storage.
-	var store *storage.SQLiteStore
-	if cfg.Storage.Type == "sqlite" {
-		store, err = storage.NewSQLiteStore(cfg.Storage)
-		if err != nil {
-			log.Fatalf("failed to create SQLite store: %v", err)
-		}
+	store := initStorage(cfg)
+	if store != nil {
 		defer func() { _ = store.Close() }()
-		log.Printf("using SQLite storage at %s", cfg.Storage.DBPath)
-
-		// Cleanup stale sessions from previous runs (sessions that were not properly closed).
-		ctx := context.Background()
-		if cleaned, err := store.CleanupStaleSessions(ctx); err != nil {
-			log.Printf("warning: failed to cleanup stale sessions: %v", err)
-		} else if cleaned > 0 {
-			log.Printf("cleaned up %d stale sessions from previous run", cleaned)
-		}
-
-		// Create default admin user if Dashboard is enabled and no users exist.
-		if cfg.Dashboard.Enabled && cfg.Dashboard.Username != "" {
-			users, _ := store.ListUsers(ctx)
-			if len(users) == 0 {
-				hashedPwd, err := auth.HashPassword(cfg.Dashboard.Password)
-				if err != nil {
-					log.Printf("warning: failed to hash admin password: %v", err)
-				} else {
-					adminUser := &storage.User{
-						Username:     cfg.Dashboard.Username,
-						PasswordHash: hashedPwd,
-						Groups:       []string{"admin"},
-						IsActive:     true,
-					}
-					if err := store.CreateUser(ctx, adminUser); err != nil {
-						log.Printf("warning: failed to create admin user: %v", err)
-					} else {
-						log.Printf("created default admin user: %s", cfg.Dashboard.Username)
-					}
-				}
-			}
-		}
 	}
 
 	srv, err := server.New(cfg)
@@ -99,43 +61,120 @@ func main() {
 	}
 
 	// Start dashboard if enabled.
-	var dashboardServer *dashboard.Server
-	if cfg.Dashboard.Enabled && store != nil {
-		sessionTimeout := 24 * time.Hour
-		if cfg.Dashboard.SessionTimeout != "" {
-			if d, err := time.ParseDuration(cfg.Dashboard.SessionTimeout); err == nil {
-				sessionTimeout = d
-			}
-		}
+	dashboardServer := startDashboard(cfg, store, srv)
 
-		dashboardCfg := dashboard.DashboardConfig{
-			ListenAddr:     cfg.Dashboard.ListenAddr,
-			SessionTimeout: sessionTimeout,
-			EnableHTTPS:    cfg.Dashboard.EnableHTTPS,
-			CertFile:       cfg.Dashboard.CertFile,
-			KeyFile:        cfg.Dashboard.KeyFile,
-		}
+	// Handle graceful shutdown.
+	setupGracefulShutdown(srv, dashboardServer)
 
-		// Create recorder adapter for dashboard.
-		var recorderAdapter dashboard.RecorderInterface
-		if recorder := srv.GetRecorder(); recorder != nil {
-			recorderAdapter = &recorderAdapterImpl{recorder: recorder}
-		}
+	log.Printf("starting vc-jump server on %s", cfg.Server.ListenAddr)
+	if err := srv.Start(); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}
 
-		dashboardServer, err = dashboard.NewWithRecorder(dashboardCfg, store, cfg.Auth, cfg.Recording, recorderAdapter)
-		if err != nil {
-			log.Printf("failed to create dashboard: %v", err)
-		} else {
-			go func() {
-				log.Printf("starting dashboard on %s", cfg.Dashboard.ListenAddr)
-				if err := dashboardServer.Start(); err != nil {
-					log.Printf("dashboard error: %v", err)
-				}
-			}()
+func printVersion() {
+	fmt.Printf("vc-jump %s\n", version)
+	fmt.Printf("  commit: %s\n", commit)
+	fmt.Printf("  built:  %s\n", date)
+}
+
+func initStorage(cfg *config.Config) *storage.SQLiteStore {
+	if cfg.Storage.Type != "sqlite" {
+		return nil
+	}
+
+	store, err := storage.NewSQLiteStore(cfg.Storage)
+	if err != nil {
+		log.Fatalf("failed to create SQLite store: %v", err)
+	}
+	log.Printf("using SQLite storage at %s", cfg.Storage.DBPath)
+
+	ctx := context.Background()
+	cleanupStaleSessions(ctx, store)
+	createDefaultAdminUser(ctx, cfg, store)
+
+	return store
+}
+
+func cleanupStaleSessions(ctx context.Context, store *storage.SQLiteStore) {
+	if cleaned, err := store.CleanupStaleSessions(ctx); err != nil {
+		log.Printf("warning: failed to cleanup stale sessions: %v", err)
+	} else if cleaned > 0 {
+		log.Printf("cleaned up %d stale sessions from previous run", cleaned)
+	}
+}
+
+func createDefaultAdminUser(ctx context.Context, cfg *config.Config, store *storage.SQLiteStore) {
+	if !cfg.Dashboard.Enabled || cfg.Dashboard.Username == "" {
+		return
+	}
+
+	users, _ := store.ListUsers(ctx)
+	if len(users) > 0 {
+		return
+	}
+
+	hashedPwd, err := auth.HashPassword(cfg.Dashboard.Password)
+	if err != nil {
+		log.Printf("warning: failed to hash admin password: %v", err)
+		return
+	}
+
+	adminUser := &storage.User{
+		Username:     cfg.Dashboard.Username,
+		PasswordHash: hashedPwd,
+		Groups:       []string{"admin"},
+		IsActive:     true,
+	}
+	if err := store.CreateUser(ctx, adminUser); err != nil {
+		log.Printf("warning: failed to create admin user: %v", err)
+	} else {
+		log.Printf("created default admin user: %s", cfg.Dashboard.Username)
+	}
+}
+
+func startDashboard(cfg *config.Config, store *storage.SQLiteStore, srv *server.Server) *dashboard.Server {
+	if !cfg.Dashboard.Enabled || store == nil {
+		return nil
+	}
+
+	sessionTimeout := 24 * time.Hour
+	if cfg.Dashboard.SessionTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Dashboard.SessionTimeout); err == nil {
+			sessionTimeout = d
 		}
 	}
 
-	// Handle graceful shutdown.
+	dashboardCfg := dashboard.DashboardConfig{
+		ListenAddr:     cfg.Dashboard.ListenAddr,
+		SessionTimeout: sessionTimeout,
+		EnableHTTPS:    cfg.Dashboard.EnableHTTPS,
+		CertFile:       cfg.Dashboard.CertFile,
+		KeyFile:        cfg.Dashboard.KeyFile,
+	}
+
+	var recorderAdapter dashboard.RecorderInterface
+	if recorder := srv.GetRecorder(); recorder != nil {
+		recorderAdapter = &recorderAdapterImpl{recorder: recorder}
+	}
+
+	dashboardServer, err := dashboard.NewWithRecorder(dashboardCfg, store, cfg.Auth, cfg.Recording, recorderAdapter)
+	if err != nil {
+		log.Printf("failed to create dashboard: %v", err)
+		return nil
+	}
+
+	go func() {
+		log.Printf("starting dashboard on %s", cfg.Dashboard.ListenAddr)
+		if err := dashboardServer.Start(); err != nil {
+			log.Printf("dashboard error: %v", err)
+		}
+	}()
+
+	return dashboardServer
+}
+
+func setupGracefulShutdown(srv *server.Server, dashboardServer *dashboard.Server) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -143,7 +182,6 @@ func main() {
 		<-sigCh
 		log.Println("shutting down server...")
 
-		// Shutdown dashboard.
 		if dashboardServer != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -156,11 +194,6 @@ func main() {
 			log.Printf("error stopping server: %v", err)
 		}
 	}()
-
-	log.Printf("starting vc-jump server on %s", cfg.Server.ListenAddr)
-	if err := srv.Start(); err != nil {
-		log.Fatalf("server error: %v", err)
-	}
 }
 
 // recorderAdapterImpl adapts recording.Recorder to dashboard.RecorderInterface.

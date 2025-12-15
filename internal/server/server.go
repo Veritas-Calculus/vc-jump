@@ -398,109 +398,136 @@ func (s *Server) runInteractiveSession(
 	hosts []config.HostConfig,
 ) {
 	sourceIP := sshConn.RemoteAddr().String()
-
-	// Check if user is admin.
 	isAdmin := s.isAdmin(username, groups)
 
-	// Show host selection menu with admin option if applicable.
 	selectedHost, err := s.selector.SelectHostWithAdmin(channel, hosts, isAdmin)
 	if err != nil {
 		s.logger.Infof("host selection failed: %v", err)
 		return
 	}
 
-	// Handle admin console.
 	if selectedHost.Name == "__admin__" {
 		s.runAdminConsole(channel, username)
 		return
 	}
 
-	// Log connect event.
+	s.logConnectEvent(username, sourceIP, selectedHost.Name)
+	dbSession := s.createDBSession(username, sourceIP, selectedHost.Name)
+	rec := s.startRecording(username, selectedHost.Name)
+
+	defer s.cleanupSession(dbSession, rec)
+
+	s.executeProxyConnection(channel, selectedHost, ptyReq, rec)
+}
+
+func (s *Server) logConnectEvent(username, sourceIP, hostName string) {
 	if s.auditor != nil {
-		s.auditor.LogConnect(username, sourceIP, selectedHost.Name, "success")
+		s.auditor.LogConnect(username, sourceIP, hostName, "success")
+	}
+}
+
+func (s *Server) createDBSession(username, sourceIP, targetHost string) *storage.Session {
+	if s.sqliteStore == nil {
+		return nil
 	}
 
-	// Create session record in database.
-	var dbSession *storage.Session
-	if s.sqliteStore != nil {
-		dbSession = &storage.Session{
-			Username:   username,
-			SourceIP:   sourceIP,
-			TargetHost: selectedHost.Name,
-			StartTime:  time.Now(),
-		}
-		if err := s.sqliteStore.CreateSession(s.ctx, dbSession); err != nil {
-			s.logger.Infof("failed to create session record: %v", err)
-		}
+	dbSession := &storage.Session{
+		Username:   username,
+		SourceIP:   sourceIP,
+		TargetHost: targetHost,
+		StartTime:  time.Now(),
+	}
+	if err := s.sqliteStore.CreateSession(s.ctx, dbSession); err != nil {
+		s.logger.Infof("failed to create session record: %v", err)
+	}
+	return dbSession
+}
+
+func (s *Server) startRecording(username, hostName string) *recording.Session {
+	if s.recorder == nil {
+		return nil
 	}
 
-	// Start recording if enabled.
-	var rec *recording.Session
-	if s.recorder != nil {
-		rec, err = s.recorder.StartSession(username, selectedHost.Name)
-		if err != nil {
-			s.logger.Infof("failed to start recording: %v", err)
-		}
+	rec, err := s.recorder.StartSession(username, hostName)
+	if err != nil {
+		s.logger.Infof("failed to start recording: %v", err)
+		return nil
 	}
-	defer func() {
+	return rec
+}
+
+func (s *Server) cleanupSession(dbSession *storage.Session, rec *recording.Session) {
+	if rec != nil {
+		_ = rec.Close()
+	}
+
+	if dbSession != nil && s.sqliteStore != nil {
+		dbSession.EndTime = time.Now()
 		if rec != nil {
-			_ = rec.Close()
+			dbSession.Recording = rec.FilePath()
 		}
-		// Update session record with end time and recording path.
-		if dbSession != nil && s.sqliteStore != nil {
-			dbSession.EndTime = time.Now()
-			if rec != nil {
-				dbSession.Recording = rec.FilePath()
-			}
-			if err := s.sqliteStore.UpdateSession(s.ctx, dbSession); err != nil {
-				s.logger.Infof("failed to update session record: %v", err)
-			}
+		if err := s.sqliteStore.UpdateSession(s.ctx, dbSession); err != nil {
+			s.logger.Infof("failed to update session record: %v", err)
 		}
-	}()
+	}
+}
 
-	// Create proxy connection to target host.
+func (s *Server) executeProxyConnection(
+	channel ssh.Channel,
+	selectedHost config.HostConfig,
+	ptyReq *ptyRequest,
+	rec *recording.Session,
+) {
 	var proxyChannel io.ReadWriteCloser = channel
 	if rec != nil {
 		proxyChannel = rec.Wrap(channel)
 	}
 
-	var proxyPtyReq *proxy.PTYRequest
-	if ptyReq != nil {
-		proxyPtyReq = &proxy.PTYRequest{
-			Term:   ptyReq.Term,
-			Width:  ptyReq.Width,
-			Height: ptyReq.Height,
-		}
-	}
+	proxyPtyReq := s.convertPtyRequest(ptyReq)
+	proxyOpts := s.loadProxyOptions(selectedHost.Name)
 
-	// Load SSH key from database if KeyID is set.
-	var proxyOpts *proxy.ConnectOptions
-	if s.sqliteStore != nil {
-		// Look up the host from database to get KeyID.
-		dbHost, err := s.sqliteStore.GetHostByName(s.ctx, selectedHost.Name)
-		if err == nil && dbHost.KeyID != "" {
-			// Load SSH key from database.
-			sshKey, err := s.sqliteStore.GetSSHKey(s.ctx, dbHost.KeyID)
-			if err == nil {
-				proxyOpts = &proxy.ConnectOptions{
-					PrivateKeyData: sshKey.PrivateKey,
-				}
-			} else {
-				s.logger.Infof("failed to load SSH key %s: %v", dbHost.KeyID, err)
-			}
-		}
-	}
-
+	var err error
 	if proxyOpts != nil {
-		if err := s.proxy.ConnectWithOptions(s.ctx, proxyChannel, selectedHost, proxyPtyReq, proxyOpts); err != nil {
-			s.logger.Infof("proxy connection failed: %v", err)
-			_, _ = io.WriteString(channel, fmt.Sprintf("Connection failed: %v\r\n", err))
-		}
+		err = s.proxy.ConnectWithOptions(s.ctx, proxyChannel, selectedHost, proxyPtyReq, proxyOpts)
 	} else {
-		if err := s.proxy.Connect(s.ctx, proxyChannel, selectedHost, proxyPtyReq); err != nil {
-			s.logger.Infof("proxy connection failed: %v", err)
-			_, _ = io.WriteString(channel, fmt.Sprintf("Connection failed: %v\r\n", err))
-		}
+		err = s.proxy.Connect(s.ctx, proxyChannel, selectedHost, proxyPtyReq)
+	}
+
+	if err != nil {
+		s.logger.Infof("proxy connection failed: %v", err)
+		_, _ = io.WriteString(channel, fmt.Sprintf("Connection failed: %v\r\n", err))
+	}
+}
+
+func (s *Server) convertPtyRequest(ptyReq *ptyRequest) *proxy.PTYRequest {
+	if ptyReq == nil {
+		return nil
+	}
+	return &proxy.PTYRequest{
+		Term:   ptyReq.Term,
+		Width:  ptyReq.Width,
+		Height: ptyReq.Height,
+	}
+}
+
+func (s *Server) loadProxyOptions(hostName string) *proxy.ConnectOptions {
+	if s.sqliteStore == nil {
+		return nil
+	}
+
+	dbHost, err := s.sqliteStore.GetHostByName(s.ctx, hostName)
+	if err != nil || dbHost.KeyID == "" {
+		return nil
+	}
+
+	sshKey, err := s.sqliteStore.GetSSHKey(s.ctx, dbHost.KeyID)
+	if err != nil {
+		s.logger.Infof("failed to load SSH key %s: %v", dbHost.KeyID, err)
+		return nil
+	}
+
+	return &proxy.ConnectOptions{
+		PrivateKeyData: sshKey.PrivateKey,
 	}
 }
 
@@ -655,50 +682,14 @@ func (s *Server) adminAddHost(channel ssh.Channel) {
 
 	_, _ = io.WriteString(channel, "\r\n--- Add Host ---\r\n")
 
-	_, _ = io.WriteString(channel, "Name: ")
-	name, err := readLine(channel)
-	if err != nil || name == "" {
-		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
+	name, addr, ok := s.promptHostBasicInfo(channel)
+	if !ok {
 		return
 	}
 
-	_, _ = io.WriteString(channel, "Address: ")
-	addr, err := readLine(channel)
-	if err != nil || addr == "" {
-		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
-		return
-	}
-
-	_, _ = io.WriteString(channel, "Port [22]: ")
-	portStr, _ := readLine(channel)
-	port := 22
-	if portStr != "" {
-		if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
-			port = p
-		}
-	}
-
-	_, _ = io.WriteString(channel, "SSH User [root]: ")
-	user, _ := readLine(channel)
-	if user == "" {
-		user = "root"
-	}
-
-	// Show available SSH keys.
-	keys, _ := s.sqliteStore.ListSSHKeys(s.ctx)
-	keyID := ""
-	if len(keys) > 0 {
-		_, _ = io.WriteString(channel, "\r\nAvailable SSH Keys:\r\n")
-		for i, k := range keys {
-			_, _ = io.WriteString(channel, fmt.Sprintf("  [%d] %s (%s)\r\n", i+1, k.Name, k.KeyType))
-		}
-		_, _ = io.WriteString(channel, "  [0] None\r\n")
-		_, _ = io.WriteString(channel, "\r\nSelect key [0]: ")
-		keyChoice, _ := readLine(channel)
-		if n, err := strconv.Atoi(keyChoice); err == nil && n >= 1 && n <= len(keys) {
-			keyID = keys[n-1].ID
-		}
-	}
+	port := s.promptPort(channel)
+	user := s.promptUser(channel)
+	keyID := s.promptSSHKey(channel)
 
 	host := &storage.Host{
 		Name:  name,
@@ -714,6 +705,65 @@ func (s *Server) adminAddHost(channel ssh.Channel) {
 	}
 
 	_, _ = io.WriteString(channel, fmt.Sprintf("\r\nHost '%s' created successfully!\r\n", name))
+}
+
+func (s *Server) promptHostBasicInfo(channel ssh.Channel) (name, addr string, ok bool) {
+	_, _ = io.WriteString(channel, "Name: ")
+	name, err := readLine(channel)
+	if err != nil || name == "" {
+		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
+		return "", "", false
+	}
+
+	_, _ = io.WriteString(channel, "Address: ")
+	addr, err = readLine(channel)
+	if err != nil || addr == "" {
+		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
+		return "", "", false
+	}
+
+	return name, addr, true
+}
+
+func (s *Server) promptPort(channel ssh.Channel) int {
+	_, _ = io.WriteString(channel, "Port [22]: ")
+	portStr, _ := readLine(channel)
+	if portStr == "" {
+		return 22
+	}
+	if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
+		return p
+	}
+	return 22
+}
+
+func (s *Server) promptUser(channel ssh.Channel) string {
+	_, _ = io.WriteString(channel, "SSH User [root]: ")
+	user, _ := readLine(channel)
+	if user == "" {
+		return "root"
+	}
+	return user
+}
+
+func (s *Server) promptSSHKey(channel ssh.Channel) string {
+	keys, _ := s.sqliteStore.ListSSHKeys(s.ctx)
+	if len(keys) == 0 {
+		return ""
+	}
+
+	_, _ = io.WriteString(channel, "\r\nAvailable SSH Keys:\r\n")
+	for i, k := range keys {
+		_, _ = io.WriteString(channel, fmt.Sprintf("  [%d] %s (%s)\r\n", i+1, k.Name, k.KeyType))
+	}
+	_, _ = io.WriteString(channel, "  [0] None\r\n")
+	_, _ = io.WriteString(channel, "\r\nSelect key [0]: ")
+
+	keyChoice, _ := readLine(channel)
+	if n, err := strconv.Atoi(keyChoice); err == nil && n >= 1 && n <= len(keys) {
+		return keys[n-1].ID
+	}
+	return ""
 }
 
 func (s *Server) adminDeleteHost(channel ssh.Channel) {

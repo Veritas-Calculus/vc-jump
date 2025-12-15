@@ -196,6 +196,28 @@ func Load(path string) (*Config, error) {
 
 // Validate checks the configuration for errors.
 func (c *Config) Validate() error {
+	if err := c.validateServer(); err != nil {
+		return err
+	}
+	if err := c.validateSession(); err != nil {
+		return err
+	}
+	if err := c.validateRecording(); err != nil {
+		return err
+	}
+	if err := c.validateLogging(); err != nil {
+		return err
+	}
+	if err := c.validateAudit(); err != nil {
+		return err
+	}
+	if err := c.validateStorage(); err != nil {
+		return err
+	}
+	return c.validateHosts()
+}
+
+func (c *Config) validateServer() error {
 	if c.Server.ListenAddr == "" {
 		return errors.New("server.listen_addr is required")
 	}
@@ -205,29 +227,36 @@ func (c *Config) Validate() error {
 	if c.Auth.CacheDuration <= 0 {
 		return errors.New("auth.cache_duration must be positive")
 	}
+	return nil
+}
+
+func (c *Config) validateSession() error {
 	if c.Session.IdleTimeout <= 0 {
 		return errors.New("session.idle_timeout must be positive")
 	}
 	if c.Session.MaxDuration <= 0 {
 		return errors.New("session.max_duration must be positive")
 	}
+	return nil
+}
 
-	// Validate recording configuration.
-	if c.Recording.Enabled {
-		if c.Recording.StorageType != "local" && c.Recording.StorageType != "s3" {
-			return errors.New("recording.storage_type must be 'local' or 's3'")
-		}
-		if c.Recording.StorageType == "local" && c.Recording.LocalPath == "" {
-			return errors.New("recording.local_path is required when storage_type is 'local'")
-		}
-		if c.Recording.StorageType == "s3" {
-			if c.Recording.S3Config.Bucket == "" {
-				return errors.New("recording.s3.bucket is required when storage_type is 's3'")
-			}
-		}
+func (c *Config) validateRecording() error {
+	if !c.Recording.Enabled {
+		return nil
 	}
+	if c.Recording.StorageType != "local" && c.Recording.StorageType != "s3" {
+		return errors.New("recording.storage_type must be 'local' or 's3'")
+	}
+	if c.Recording.StorageType == "local" && c.Recording.LocalPath == "" {
+		return errors.New("recording.local_path is required when storage_type is 'local'")
+	}
+	if c.Recording.StorageType == "s3" && c.Recording.S3Config.Bucket == "" {
+		return errors.New("recording.s3.bucket is required when storage_type is 's3'")
+	}
+	return nil
+}
 
-	// Validate logging configuration.
+func (c *Config) validateLogging() error {
 	validLogLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLogLevels[c.Logging.Level] {
 		return errors.New("logging.level must be one of: debug, info, warn, error")
@@ -236,18 +265,23 @@ func (c *Config) Validate() error {
 	if !validLogFormats[c.Logging.Format] {
 		return errors.New("logging.format must be 'json' or 'text'")
 	}
+	return nil
+}
 
-	// Validate audit configuration.
-	if c.Audit.Enabled {
-		if c.Audit.StorageType != "local" && c.Audit.StorageType != "s3" {
-			return errors.New("audit.storage_type must be 'local' or 's3'")
-		}
-		if c.Audit.StorageType == "local" && c.Audit.LocalPath == "" {
-			return errors.New("audit.local_path is required when storage_type is 'local'")
-		}
+func (c *Config) validateAudit() error {
+	if !c.Audit.Enabled {
+		return nil
 	}
+	if c.Audit.StorageType != "local" && c.Audit.StorageType != "s3" {
+		return errors.New("audit.storage_type must be 'local' or 's3'")
+	}
+	if c.Audit.StorageType == "local" && c.Audit.LocalPath == "" {
+		return errors.New("audit.local_path is required when storage_type is 'local'")
+	}
+	return nil
+}
 
-	// Validate storage configuration.
+func (c *Config) validateStorage() error {
 	if c.Storage.Type != "file" && c.Storage.Type != "sqlite" {
 		return errors.New("storage.type must be 'file' or 'sqlite'")
 	}
@@ -257,7 +291,10 @@ func (c *Config) Validate() error {
 	if c.Storage.Type == "sqlite" && c.Storage.DBPath == "" {
 		return errors.New("storage.db_path is required when type is 'sqlite'")
 	}
+	return nil
+}
 
+func (c *Config) validateHosts() error {
 	for i, h := range c.Hosts {
 		if h.Name == "" {
 			return fmt.Errorf("hosts[%d].name is required", i)
@@ -269,6 +306,5 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("hosts[%d].port must be between 1 and 65535", i)
 		}
 	}
-
 	return nil
 }
