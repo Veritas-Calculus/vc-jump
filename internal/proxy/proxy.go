@@ -221,8 +221,7 @@ func createHostKeyCallback(knownHostsPath string, insecureIgnore bool) (ssh.Host
 	// If insecure mode is explicitly enabled, skip host key verification.
 	// This should only be used for trusted internal networks.
 	if insecureIgnore {
-		//nolint:gosec // InsecureIgnoreHostKey is intentionally allowed when explicitly configured.
-		return ssh.InsecureIgnoreHostKey(), nil
+		return ssh.InsecureIgnoreHostKey(), nil //nolint:gosec // G106: intentionally allowed when explicitly configured by admin
 	}
 
 	if knownHostsPath == "" {
