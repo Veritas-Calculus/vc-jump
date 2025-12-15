@@ -674,7 +674,7 @@ func (s *Server) handleWatchSession(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create a channel to receive session output.
 	outputChan := make(chan []byte, 100)
