@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -46,12 +47,13 @@ type SessionConfig struct {
 
 // HostConfig defines a target host configuration.
 type HostConfig struct {
-	Name    string   `yaml:"name"`
-	Addr    string   `yaml:"addr"`
-	Port    int      `yaml:"port"`
-	Users   []string `yaml:"users"`
-	Groups  []string `yaml:"groups"`
-	KeyPath string   `yaml:"key_path"`
+	Name           string   `yaml:"name"`
+	Addr           string   `yaml:"addr"`
+	Port           int      `yaml:"port"`
+	Users          []string `yaml:"users"`
+	Groups         []string `yaml:"groups"`
+	KeyPath        string   `yaml:"key_path"`
+	KnownHostsPath string   `yaml:"known_hosts_path"` // Path to known_hosts file for host key verification.
 }
 
 // RecordingConfig holds session recording configuration.
@@ -167,9 +169,12 @@ func Load(path string) (*Config, error) {
 		return nil, errors.New("config path cannot be empty")
 	}
 
+	// Clean and validate the path.
+	cleanPath := filepath.Clean(path)
+
 	cfg := DefaultConfig()
 
-	data, err := os.ReadFile(path) //nolint:gosec // path is from command line flag
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return cfg, nil

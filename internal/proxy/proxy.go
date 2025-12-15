@@ -8,10 +8,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Proxy handles SSH connections to target hosts.
@@ -76,13 +78,19 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 		targetUser = opts.TargetUser
 	}
 
+	// Create host key callback.
+	hostKeyCallback, err := createHostKeyCallback(host.KnownHostsPath)
+	if err != nil {
+		return fmt.Errorf("failed to create host key callback: %w", err)
+	}
+
 	// Create SSH client config.
 	clientConfig := &ssh.ClientConfig{
 		User: targetUser,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(key),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // TODO: Implement proper host key verification.
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         30 * time.Second,
 	}
 
@@ -187,7 +195,13 @@ func loadPrivateKey(keyPath string) (ssh.Signer, error) {
 		keyPath = homeDir + "/.ssh/id_rsa"
 	}
 
-	keyData, err := os.ReadFile(keyPath) //nolint:gosec // keyPath is validated
+	// Validate keyPath to prevent directory traversal.
+	cleanPath := filepath.Clean(keyPath)
+	if !filepath.IsAbs(cleanPath) {
+		return nil, errors.New("key path must be an absolute path")
+	}
+
+	keyData, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read key file: %w", err)
 	}
@@ -198,6 +212,36 @@ func loadPrivateKey(keyPath string) (ssh.Signer, error) {
 	}
 
 	return signer, nil
+}
+
+// createHostKeyCallback creates a host key callback function.
+// If knownHostsPath is empty, it uses the default ~/.ssh/known_hosts file.
+func createHostKeyCallback(knownHostsPath string) (ssh.HostKeyCallback, error) {
+	if knownHostsPath == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("cannot find home directory: %w", err)
+		}
+		knownHostsPath = filepath.Join(homeDir, ".ssh", "known_hosts")
+	}
+
+	// Validate and clean the path.
+	cleanPath := filepath.Clean(knownHostsPath)
+	if !filepath.IsAbs(cleanPath) {
+		return nil, errors.New("known_hosts path must be an absolute path")
+	}
+
+	// Check if file exists.
+	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("known_hosts file does not exist: %s", cleanPath)
+	}
+
+	callback, err := knownhosts.New(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse known_hosts file: %w", err)
+	}
+
+	return callback, nil
 }
 
 func getUserForHost(host config.HostConfig) string {

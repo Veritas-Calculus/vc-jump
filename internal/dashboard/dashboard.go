@@ -627,7 +627,7 @@ func (s *Server) handleRecording(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Security: prevent directory traversal.
-	if strings.Contains(filename, "..") || strings.Contains(filename, "/") {
+	if strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
 		s.jsonError(w, "invalid filename", http.StatusBadRequest)
 		return
 	}
@@ -639,10 +639,16 @@ func (s *Server) handleRecording(w http.ResponseWriter, r *http.Request) {
 
 	filePath := filepath.Join(s.recordingCfg.LocalPath, filename)
 
+	// Additional validation: ensure the path is within the expected directory.
+	if !isPathWithinBase(s.recordingCfg.LocalPath, filePath) {
+		s.jsonError(w, "invalid filename", http.StatusBadRequest)
+		return
+	}
+
 	switch r.Method {
 	case http.MethodGet:
 		// Return recording content.
-		data, err := os.ReadFile(filePath) //nolint:gosec // filePath constructed from validated filename
+		data, err := os.ReadFile(filePath) // #nosec G304 -- path validated by isPathWithinBase
 		if err != nil {
 			s.jsonError(w, "recording not found", http.StatusNotFound)
 			return
@@ -673,4 +679,35 @@ func (s *Server) jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// isPathWithinBase validates that the given path is within the base directory.
+// This prevents directory traversal attacks.
+func isPathWithinBase(basePath, targetPath string) bool {
+	// Clean both paths.
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return false
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return false
+	}
+
+	// Ensure the target path starts with the base path.
+	relPath, err := filepath.Rel(absBase, absTarget)
+	if err != nil {
+		return false
+	}
+
+	// If the relative path starts with "..", it's outside the base directory.
+	return !startsWithDotDot(relPath)
+}
+
+// startsWithDotDot checks if a path starts with "..".
+func startsWithDotDot(path string) bool {
+	if len(path) < 2 {
+		return false
+	}
+	return path[0] == '.' && path[1] == '.' && (len(path) == 2 || path[2] == filepath.Separator)
 }

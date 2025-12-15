@@ -94,7 +94,12 @@ func (s *LocalStorage) Write(ctx context.Context, event Event) error {
 	filename := fmt.Sprintf("audit_%s.jsonl", event.Timestamp.Format("20060102"))
 	filePath := filepath.Join(s.basePath, filename)
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600) //nolint:gosec // filePath is constructed from basePath
+	// Validate that the constructed path is within basePath to prevent directory traversal.
+	if !isPathWithinBase(s.basePath, filePath) {
+		return errors.New("invalid file path: directory traversal attempt detected")
+	}
+
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600) // #nosec G304 -- path validated by isPathWithinBase
 	if err != nil {
 		return fmt.Errorf("failed to open audit file: %w", err)
 	}
@@ -150,7 +155,12 @@ func (s *LocalStorage) Query(ctx context.Context, opts QueryOptions) ([]Event, e
 }
 
 func (s *LocalStorage) readFile(filePath string) ([]Event, error) {
-	data, err := os.ReadFile(filePath) //nolint:gosec // filePath is constructed from basePath
+	// Validate that the path is within basePath to prevent directory traversal.
+	if !isPathWithinBase(s.basePath, filePath) {
+		return nil, errors.New("invalid file path: directory traversal attempt detected")
+	}
+
+	data, err := os.ReadFile(filePath) // #nosec G304 -- path validated by isPathWithinBase
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +219,37 @@ func (s *LocalStorage) Cleanup(ctx context.Context, before time.Time) error {
 	}
 
 	return nil
+}
+
+// isPathWithinBase validates that the given path is within the base directory.
+// This prevents directory traversal attacks.
+func isPathWithinBase(basePath, targetPath string) bool {
+	// Clean both paths.
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return false
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return false
+	}
+
+	// Ensure the target path starts with the base path.
+	relPath, err := filepath.Rel(absBase, absTarget)
+	if err != nil {
+		return false
+	}
+
+	// If the relative path starts with "..", it's outside the base directory.
+	return !startsWithDotDot(relPath)
+}
+
+// startsWithDotDot checks if a path starts with "..".
+func startsWithDotDot(path string) bool {
+	if len(path) < 2 {
+		return false
+	}
+	return path[0] == '.' && path[1] == '.' && (len(path) == 2 || path[2] == filepath.Separator)
 }
 
 func splitLines(data []byte) [][]byte {

@@ -45,12 +45,24 @@ func NewLocalStorage(basePath string) (*LocalStorage, error) {
 
 func (s *LocalStorage) Save(ctx context.Context, filename string, data []byte) error {
 	filePath := filepath.Join(s.basePath, filename)
+
+	// Validate that the path is within basePath to prevent directory traversal.
+	if !isPathWithinBase(s.basePath, filePath) {
+		return errors.New("invalid file path: directory traversal attempt detected")
+	}
+
 	return os.WriteFile(filePath, data, 0600)
 }
 
 func (s *LocalStorage) Load(_ context.Context, filename string) ([]byte, error) {
 	filePath := filepath.Join(s.basePath, filename)
-	return os.ReadFile(filePath) //nolint:gosec // filePath is constructed from basePath
+
+	// Validate that the path is within basePath to prevent directory traversal.
+	if !isPathWithinBase(s.basePath, filePath) {
+		return nil, errors.New("invalid file path: directory traversal attempt detected")
+	}
+
+	return os.ReadFile(filePath) // #nosec G304 -- path validated by isPathWithinBase
 }
 
 func (s *LocalStorage) List(ctx context.Context) ([]string, error) {
@@ -69,7 +81,44 @@ func (s *LocalStorage) List(ctx context.Context) ([]string, error) {
 
 func (s *LocalStorage) Delete(ctx context.Context, filename string) error {
 	filePath := filepath.Join(s.basePath, filename)
+
+	// Validate that the path is within basePath to prevent directory traversal.
+	if !isPathWithinBase(s.basePath, filePath) {
+		return errors.New("invalid file path: directory traversal attempt detected")
+	}
+
 	return os.Remove(filePath)
+}
+
+// isPathWithinBase validates that the given path is within the base directory.
+// This prevents directory traversal attacks.
+func isPathWithinBase(basePath, targetPath string) bool {
+	// Clean both paths.
+	absBase, err := filepath.Abs(basePath)
+	if err != nil {
+		return false
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return false
+	}
+
+	// Ensure the target path starts with the base path.
+	relPath, err := filepath.Rel(absBase, absTarget)
+	if err != nil {
+		return false
+	}
+
+	// If the relative path starts with "..", it's outside the base directory.
+	return !startsWithDotDot(relPath)
+}
+
+// startsWithDotDot checks if a path starts with "..".
+func startsWithDotDot(path string) bool {
+	if len(path) < 2 {
+		return false
+	}
+	return path[0] == '.' && path[1] == '.' && (len(path) == 2 || path[2] == filepath.Separator)
 }
 
 // S3Storage implements Storage using S3-compatible object storage.
@@ -198,14 +247,22 @@ func (r *Recorder) StartSession(username, hostname string) (*Session, error) {
 
 	// Get the storage path based on storage type.
 	var filePath string
+	var basePath string
 	if r.cfg.StorageType == "local" {
-		filePath = filepath.Join(r.cfg.LocalPath, filename)
+		basePath = r.cfg.LocalPath
+		filePath = filepath.Join(basePath, filename)
 	} else {
 		// For S3, we still create a temporary local file first.
-		filePath = filepath.Join(os.TempDir(), filename)
+		basePath = os.TempDir()
+		filePath = filepath.Join(basePath, filename)
 	}
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600) //nolint:gosec // filePath constructed from safe components
+	// Validate that the path is within basePath to prevent directory traversal.
+	if !isPathWithinBase(basePath, filePath) {
+		return nil, errors.New("invalid file path: directory traversal attempt detected")
+	}
+
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600) // #nosec G304 -- path validated by isPathWithinBase
 	if err != nil {
 		return nil, fmt.Errorf("failed to create recording file: %w", err)
 	}

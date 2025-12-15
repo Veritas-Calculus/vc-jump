@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -240,10 +241,13 @@ func (s *Server) createSSHConfig() (*ssh.ServerConfig, error) {
 func (s *Server) loadOrGenerateHostKey() (ssh.Signer, error) {
 	keyPath := s.cfg.Server.HostKeyPath
 
-	keyData, err := os.ReadFile(keyPath) //nolint:gosec // keyPath from config
+	// Clean the path to prevent directory traversal.
+	cleanPath := filepath.Clean(keyPath)
+
+	keyData, err := os.ReadFile(cleanPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return s.generateHostKey(keyPath)
+			return s.generateHostKey(cleanPath)
 		}
 		return nil, fmt.Errorf("failed to read host key: %w", err)
 	}
