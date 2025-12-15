@@ -168,9 +168,15 @@
 
                 <div class="section" id="section-recordings">
                     <h2>Session Recordings</h2>
-                    <button class="btn-sm" onclick="loadRecordings()">Refresh</button>
+                    <div style="margin-bottom:10px;display:flex;gap:10px;align-items:center">
+                        <button class="btn-sm" onclick="loadRecordings()">Refresh</button>
+                        <button class="btn-sm btn-del" id="batchDeleteBtn" onclick="showBatchDeleteConfirm()" style="display:none">Delete Selected (<span id="selectedCount">0</span>)</button>
+                        <label style="font-size:12px;cursor:pointer">
+                            <input type="checkbox" id="selectAllRecordings" onchange="toggleSelectAll(this.checked)"> Select All
+                        </label>
+                    </div>
                     <table style="margin-top:10px">
-                        <thead><tr><th>Filename</th><th>Size</th><th>Date</th><th>Action</th></tr></thead>
+                        <thead><tr><th style="width:30px"><input type="checkbox" id="selectAllHeader" onchange="toggleSelectAll(this.checked)"></th><th>Filename</th><th>Size</th><th>Date</th><th>Action</th></tr></thead>
                         <tbody id="recordings-table"></tbody>
                     </table>
                 </div>
@@ -263,6 +269,19 @@
                     <button type="submit" class="btn-sm btn-add">Generate</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Confirm Dialog Modal -->
+    <div class="modal" id="confirmModal">
+        <div class="modal-content" style="width:400px">
+            <h3 id="confirmTitle">Confirm</h3>
+            <p id="confirmMessage" style="margin:15px 0;font-size:13px"></p>
+            <div id="confirmDetails" style="max-height:150px;overflow-y:auto;background:#f5f5f5;padding:10px;font-size:11px;margin-bottom:15px;display:none"></div>
+            <div class="modal-actions">
+                <button type="button" class="btn-sm" id="confirmCancelBtn" onclick="closeConfirmModal()">Cancel</button>
+                <button type="button" class="btn-sm btn-del" id="confirmOkBtn">Confirm</button>
+            </div>
         </div>
     </div>
 
@@ -494,13 +513,94 @@
             return `${seconds}s`;
         }
 
+        // Track selected recordings for batch delete.
+        let selectedRecordings = new Set();
+
         async function loadRecordings() {
             try {
                 const recordings = await (await fetch('/api/recordings', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                selectedRecordings.clear();
+                updateBatchDeleteButton();
+                
+                // Reset select all checkboxes.
+                const selectAllHeader = document.getElementById('selectAllHeader');
+                const selectAllRecordings = document.getElementById('selectAllRecordings');
+                if (selectAllHeader) selectAllHeader.checked = false;
+                if (selectAllRecordings) selectAllRecordings.checked = false;
+                
                 document.getElementById('recordings-table').innerHTML = recordings.length ? recordings.map(r => 
-                    `<tr><td>${r.name}</td><td>${formatSize(r.size)}</td><td>${new Date(r.mod_time).toLocaleString()}</td><td><button class="btn-sm" onclick="playRecording('${r.name}')">Play</button> <button class="btn-sm btn-del" onclick="deleteRecording('${r.name}')">Del</button></td></tr>`
-                ).join('') : '<tr><td colspan="4" style="text-align:center;color:#888">No recordings found</td></tr>';
+                    `<tr>
+                        <td><input type="checkbox" class="recording-checkbox" data-filename="${escapeHtml(r.name)}" onchange="toggleRecordingSelection('${escapeJs(r.name)}', this.checked)"></td>
+                        <td>${escapeHtml(r.name)}</td>
+                        <td>${formatSize(r.size)}</td>
+                        <td>${new Date(r.mod_time).toLocaleString()}</td>
+                        <td>
+                            <button class="btn-sm" onclick="playRecording('${escapeJs(r.name)}')">Play</button>
+                            <button class="btn-sm btn-del" onclick="showDeleteConfirm('${escapeJs(r.name)}')">Del</button>
+                        </td>
+                    </tr>`
+                ).join('') : '<tr><td colspan="5" style="text-align:center;color:#888">No recordings found</td></tr>';
             } catch (e) { console.error(e); }
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function escapeJs(str) {
+            return str.replace(/'/g, "\\'").replace(/"/g, '\\"');
+        }
+
+        function toggleRecordingSelection(filename, checked) {
+            if (checked) {
+                selectedRecordings.add(filename);
+            } else {
+                selectedRecordings.delete(filename);
+            }
+            updateBatchDeleteButton();
+            updateSelectAllState();
+        }
+
+        function toggleSelectAll(checked) {
+            const checkboxes = document.querySelectorAll('.recording-checkbox');
+            checkboxes.forEach(cb => {
+                cb.checked = checked;
+                const filename = cb.getAttribute('data-filename');
+                if (checked) {
+                    selectedRecordings.add(filename);
+                } else {
+                    selectedRecordings.delete(filename);
+                }
+            });
+            
+            // Sync both select all checkboxes.
+            const selectAllHeader = document.getElementById('selectAllHeader');
+            const selectAllRecordings = document.getElementById('selectAllRecordings');
+            if (selectAllHeader) selectAllHeader.checked = checked;
+            if (selectAllRecordings) selectAllRecordings.checked = checked;
+            
+            updateBatchDeleteButton();
+        }
+
+        function updateSelectAllState() {
+            const checkboxes = document.querySelectorAll('.recording-checkbox');
+            const allChecked = checkboxes.length > 0 && Array.from(checkboxes).every(cb => cb.checked);
+            
+            const selectAllHeader = document.getElementById('selectAllHeader');
+            const selectAllRecordings = document.getElementById('selectAllRecordings');
+            if (selectAllHeader) selectAllHeader.checked = allChecked;
+            if (selectAllRecordings) selectAllRecordings.checked = allChecked;
+        }
+
+        function updateBatchDeleteButton() {
+            const btn = document.getElementById('batchDeleteBtn');
+            const countSpan = document.getElementById('selectedCount');
+            if (btn && countSpan) {
+                countSpan.textContent = selectedRecordings.size;
+                btn.style.display = selectedRecordings.size > 0 ? 'inline-block' : 'none';
+            }
         }
 
         function formatSize(bytes) {
@@ -765,12 +865,88 @@
             return `${m}:${s.toString().padStart(2, '0')}`;
         }
 
+        // ============================================================
+        // Custom Confirm Dialog
+        // ============================================================
+        let confirmCallback = null;
+
+        function showConfirmDialog(title, message, details, onConfirm) {
+            document.getElementById('confirmTitle').textContent = title;
+            document.getElementById('confirmMessage').textContent = message;
+            
+            const detailsEl = document.getElementById('confirmDetails');
+            if (details && details.length > 0) {
+                detailsEl.innerHTML = details.map(d => escapeHtml(d)).join('<br>');
+                detailsEl.style.display = 'block';
+            } else {
+                detailsEl.style.display = 'none';
+            }
+            
+            confirmCallback = onConfirm;
+            document.getElementById('confirmOkBtn').onclick = executeConfirm;
+            document.getElementById('confirmModal').classList.add('active');
+        }
+
+        function closeConfirmModal() {
+            document.getElementById('confirmModal').classList.remove('active');
+            confirmCallback = null;
+        }
+
+        function executeConfirm() {
+            if (confirmCallback) {
+                confirmCallback();
+            }
+            closeConfirmModal();
+        }
+
+        function showDeleteConfirm(filename) {
+            showConfirmDialog(
+                'Delete Recording',
+                `Are you sure you want to delete "${filename}"?`,
+                null,
+                async () => {
+                    try {
+                        await fetch('/api/recordings/' + encodeURIComponent(filename), {
+                            method: 'DELETE',
+                            headers: { 'Authorization': 'Bearer ' + token }
+                        });
+                        loadRecordings();
+                    } catch (e) { console.error(e); }
+                }
+            );
+        }
+
+        function showBatchDeleteConfirm() {
+            if (selectedRecordings.size === 0) return;
+            
+            const filenames = Array.from(selectedRecordings);
+            showConfirmDialog(
+                'Batch Delete Recordings',
+                `Are you sure you want to delete ${filenames.length} recording(s)?`,
+                filenames.length <= 10 ? filenames : [...filenames.slice(0, 10), `... and ${filenames.length - 10} more`],
+                async () => {
+                    try {
+                        const res = await fetch('/api/recordings', {
+                            method: 'DELETE',
+                            headers: {
+                                'Authorization': 'Bearer ' + token,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ filenames: filenames })
+                        });
+                        const data = await res.json();
+                        if (data.failed && Object.keys(data.failed).length > 0) {
+                            console.warn('Some files failed to delete:', data.failed);
+                        }
+                        loadRecordings();
+                    } catch (e) { console.error(e); }
+                }
+            );
+        }
+
+        // Legacy function kept for compatibility but now uses custom dialog.
         async function deleteRecording(filename) {
-            if (!confirm('Delete recording "' + filename + '"?')) return;
-            try {
-                await fetch('/api/recordings/' + filename, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
-                loadRecordings();
-            } catch (e) { console.error(e); }
+            showDeleteConfirm(filename);
         }
 
         function showModal(id) { 

@@ -583,11 +583,17 @@ func (s *Server) handleActiveSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRecordings(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleRecordingsList(w, r)
+	case http.MethodDelete:
+		s.handleRecordingsBatchDelete(w, r)
+	default:
 		s.jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
+}
 
+func (s *Server) handleRecordingsList(w http.ResponseWriter, _ *http.Request) {
 	if !s.recordingCfg.Enabled || s.recordingCfg.LocalPath == "" {
 		s.jsonError(w, "recording not enabled", http.StatusNotFound)
 		return
@@ -617,6 +623,76 @@ func (s *Server) handleRecordings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonResponse(w, recordings)
+}
+
+// BatchDeleteRequest represents the request body for batch delete.
+type BatchDeleteRequest struct {
+	Filenames []string `json:"filenames"`
+}
+
+// BatchDeleteResponse represents the response for batch delete.
+type BatchDeleteResponse struct {
+	Deleted []string          `json:"deleted"`
+	Failed  map[string]string `json:"failed,omitempty"`
+}
+
+func (s *Server) handleRecordingsBatchDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.recordingCfg.Enabled || s.recordingCfg.LocalPath == "" {
+		s.jsonError(w, "recording not enabled", http.StatusNotFound)
+		return
+	}
+
+	var req BatchDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Filenames) == 0 {
+		s.jsonError(w, "no filenames provided", http.StatusBadRequest)
+		return
+	}
+
+	// Limit batch size to prevent abuse.
+	const maxBatchSize = 100
+	if len(req.Filenames) > maxBatchSize {
+		s.jsonError(w, fmt.Sprintf("batch size exceeds limit of %d", maxBatchSize), http.StatusBadRequest)
+		return
+	}
+
+	resp := BatchDeleteResponse{
+		Deleted: make([]string, 0),
+		Failed:  make(map[string]string),
+	}
+
+	for _, filename := range req.Filenames {
+		// Security: prevent directory traversal.
+		if filename == "" || strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+			resp.Failed[filename] = "invalid filename"
+			continue
+		}
+
+		filePath := filepath.Join(s.recordingCfg.LocalPath, filename)
+
+		// Additional validation: ensure the path is within the expected directory.
+		if !isPathWithinBase(s.recordingCfg.LocalPath, filePath) {
+			resp.Failed[filename] = "invalid filename"
+			continue
+		}
+
+		if err := os.Remove(filePath); err != nil {
+			if os.IsNotExist(err) {
+				resp.Failed[filename] = "file not found"
+			} else {
+				resp.Failed[filename] = "delete failed"
+			}
+			continue
+		}
+
+		resp.Deleted = append(resp.Deleted, filename)
+	}
+
+	s.jsonResponse(w, resp)
 }
 
 func (s *Server) handleRecording(w http.ResponseWriter, r *http.Request) {
