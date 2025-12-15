@@ -1,0 +1,34 @@
+repos:
+  # Go formatting and imports
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+      - id: go-imports
+      - id: go-vet-mod
+      - id: go-build-mod
+
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: check-merge-conflict
+
+  # Security scanning
+  - repo: https://github.com/securego/gosec
+    rev: v2.19.0
+    hooks:
+      - id: gosec
+        args: ['-exclude-dir=vendor', './...']
+
+  # Commit message format
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v3.13.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]

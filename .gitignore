@@ -1,0 +1,33 @@
+# Build output
+vc-jump
+vc-jump-*
+*.exe
+dist/
+
+# Host key
+host_key
+
+# Data and recordings
+data/
+cache/
+recordings/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+*.out
+coverage.html
+
+# GoReleaser
+dist/
+
+# Logs
+*.log

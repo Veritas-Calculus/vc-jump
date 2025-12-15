@@ -1,0 +1,60 @@
+server:
+  listen_addr: ":2222"
+  host_key_path: "./host_key"
+  max_connections: 100
+
+auth:
+  sso_endpoint: ""  # Leave empty for local development.
+  cache_duration: 24h
+  cache_path: "./cache"
+
+session:
+  idle_timeout: 30m
+  max_duration: 8h
+
+recording:
+  enabled: true
+  storage_type: "local"  # "local" or "s3"
+  local_path: "./recordings"
+  s3:
+    endpoint: ""
+    bucket: ""
+    region: "us-east-1"
+    access_key_id: ""
+    secret_access_key: ""
+    use_ssl: true
+
+logging:
+  level: "info"           # debug, info, warn, error
+  format: "json"          # json, text
+  output: "stdout"        # stdout, file
+  file_path: "./logs/vc-jump.log"
+  retention_days: 30
+  max_size_mb: 100
+  max_backups: 5
+
+audit:
+  enabled: true
+  storage_type: "local"   # "local" or "s3"
+  local_path: "./audit"
+  retention_days: 90
+
+storage:
+  type: "file"            # "file" or "sqlite"
+  file_path: "./data"
+  db_path: "./data/vc-jump.db"
+
+hosts:
+  - name: "dev-server-1"
+    addr: "192.168.1.10"
+    port: 22
+    users: []
+    groups: ["developers"]
+    key_path: "~/.ssh/id_rsa"
+  
+  - name: "prod-server-1"
+    addr: "192.168.1.20"
+    port: 22
+    users: ["admin"]
+    groups: ["ops"]
+    key_path: "~/.ssh/id_rsa"

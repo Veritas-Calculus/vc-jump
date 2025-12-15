@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VC Jump</title>
+    <!-- xterm.js for terminal emulation (offline) -->
+    <link rel="stylesheet" href="/static/vendor/xterm.css">
+    <script src="/static/vendor/xterm.min.js"></script>
+    <script src="/static/vendor/xterm-addon-fit.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: monospace; background: #fff; font-size: 14px; }
+        a { color: #00f; }
+        
+        /* Login */
+        .login-container { display: flex; justify-content: center; align-items: center; min-height: 100vh; background: #eee; }
+        .login-box { background: #fff; padding: 20px; border: 1px solid #999; width: 300px; }
+        .login-box h1 { font-size: 18px; margin-bottom: 15px; text-align: center; }
+        .form-group { margin-bottom: 10px; }
+        .form-group label { display: block; margin-bottom: 3px; }
+        .form-group input, .form-group select { width: 100%; padding: 6px; border: 1px solid #999; font-family: monospace; }
+        .btn { width: 100%; padding: 8px; background: #333; color: #fff; border: none; cursor: pointer; font-family: monospace; }
+        .btn:hover { background: #000; }
+        .error { color: #c00; margin-top: 10px; text-align: center; font-size: 12px; }
+        
+        /* Dashboard */
+        .dashboard { display: none; }
+        .dashboard.active { display: block; }
+        .login-container.hidden { display: none; }
+        
+        nav { background: #333; color: #fff; padding: 10px 15px; display: flex; justify-content: space-between; align-items: center; }
+        nav h1 { font-size: 14px; font-weight: normal; }
+        .logout-btn { background: #c00; color: #fff; border: none; padding: 5px 10px; cursor: pointer; font-family: monospace; font-size: 12px; }
+        
+        .main-content { display: flex; min-height: calc(100vh - 40px); }
+        .sidebar { width: 150px; background: #f5f5f5; border-right: 1px solid #ccc; }
+        .sidebar ul { list-style: none; }
+        .sidebar a { display: block; padding: 8px 10px; color: #333; text-decoration: none; border-bottom: 1px solid #ddd; font-size: 12px; }
+        .sidebar a:hover, .sidebar a.active { background: #ddd; }
+        
+        .content { flex: 1; padding: 15px; }
+        .content h2 { font-size: 14px; margin-bottom: 15px; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+        
+        /* Stats */
+        .stats { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+        .stat { background: #f5f5f5; padding: 10px 15px; border: 1px solid #ccc; }
+        .stat-label { font-size: 11px; color: #666; }
+        .stat-value { font-size: 20px; font-weight: bold; }
+        
+        /* Tables */
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { padding: 6px 8px; text-align: left; border: 1px solid #ccc; }
+        th { background: #f0f0f0; font-weight: bold; }
+        tr:hover { background: #f9f9f9; }
+        code { background: #f0f0f0; padding: 1px 4px; font-size: 11px; }
+        
+        /* Buttons */
+        .btn-sm { padding: 3px 8px; font-size: 11px; cursor: pointer; border: 1px solid #999; background: #fff; font-family: monospace; }
+        .btn-sm:hover { background: #eee; }
+        .btn-add { background: #333; color: #fff; border: none; margin-bottom: 10px; }
+        .btn-add:hover { background: #000; }
+        .btn-del { background: #c00; color: #fff; border: none; }
+        .btn-del:hover { background: #900; }
+        
+        /* Modal */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: #fff; padding: 15px; border: 1px solid #333; width: 350px; }
+        .modal-content h3 { font-size: 14px; margin-bottom: 15px; }
+        .modal-actions { margin-top: 15px; text-align: right; }
+        .modal-actions button { margin-left: 5px; }
+        
+        .section { display: none; }
+        .section.active { display: block; }
+        .active-badge { color: #090; }
+    </style>
+</head>
+<body>
+    <div class="login-container" id="loginContainer">
+        <div class="login-box">
+            <h1>VC Jump Login</h1>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="username" required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="password" required>
+                </div>
+                <button type="submit" class="btn">Login</button>
+                <div class="error" id="loginError"></div>
+            </form>
+        </div>
+    </div>
+
+    <div class="dashboard" id="dashboard">
+        <nav>
+            <h1>VC Jump - <span id="currentUser"></span></h1>
+            <button class="logout-btn" onclick="logout()">Logout</button>
+        </nav>
+        <div class="main-content">
+            <div class="sidebar">
+                <ul>
+                    <li><a href="#overview" data-section="overview">Overview</a></li>
+                    <li><a href="#hosts" data-section="hosts">Hosts</a></li>
+                    <li><a href="#users" data-section="users">Users</a></li>
+                    <li><a href="#keys" data-section="keys">SSH Keys</a></li>
+                    <li><a href="#sessions" data-section="sessions">Sessions</a></li>
+                    <li><a href="#recordings" data-section="recordings">Recordings</a></li>
+                </ul>
+            </div>
+            <div class="content">
+                <div class="section active" id="section-overview">
+                    <h2>Overview</h2>
+                    <div class="stats">
+                        <div class="stat"><div class="stat-label">Hosts</div><div class="stat-value" id="stat-hosts">0</div></div>
+                        <div class="stat"><div class="stat-label">Users</div><div class="stat-value" id="stat-users">0</div></div>
+                        <div class="stat"><div class="stat-label">Active</div><div class="stat-value" id="stat-active-sessions">0</div></div>
+                        <div class="stat"><div class="stat-label">Keys</div><div class="stat-value" id="stat-keys">0</div></div>
+                    </div>
+                </div>
+
+                <div class="section" id="section-hosts">
+                    <h2>Hosts</h2>
+                    <button class="btn-sm btn-add" onclick="showModal('addHostModal')">+ Add Host</button>
+                    <table>
+                        <thead><tr><th>Name</th><th>Address</th><th>Port</th><th>SSH Key</th><th>Users</th><th>Action</th></tr></thead>
+                        <tbody id="hosts-table"></tbody>
+                    </table>
+                </div>
+
+                <div class="section" id="section-users">
+                    <h2>Users</h2>
+                    <button class="btn-sm btn-add" onclick="showModal('addUserModal')">+ Add User</button>
+                    <table>
+                        <thead><tr><th>Username</th><th>Source</th><th>Groups</th><th>Allowed Hosts</th><th>Status</th><th>Last Login</th><th>Action</th></tr></thead>
+                        <tbody id="users-table"></tbody>
+                    </table>
+                </div>
+
+                <div class="section" id="section-keys">
+                    <h2>SSH Keys</h2>
+                    <button class="btn-sm btn-add" onclick="showModal('addKeyModal')">+ Generate Key</button>
+                    <table>
+                        <thead><tr><th>Name</th><th>Type</th><th>Fingerprint</th><th>Used By</th><th>Created</th><th>Action</th></tr></thead>
+                        <tbody id="keys-table"></tbody>
+                    </table>
+                </div>
+
+                <div class="section" id="section-sessions">
+                    <h2>Sessions</h2>
+                    <button class="btn-sm" onclick="loadSessions()">Refresh</button>
+                    
+                    <h3 style="margin-top:20px">Active Sessions</h3>
+                    <table style="margin-top:10px">
+                        <thead><tr><th>User</th><th>Source</th><th>Target</th><th>Start</th><th>Duration</th></tr></thead>
+                        <tbody id="active-sessions-table"></tbody>
+                    </table>
+                    
+                    <h3 style="margin-top:30px">Session History</h3>
+                    <table style="margin-top:10px">
+                        <thead><tr><th>User</th><th>Source</th><th>Target</th><th>Start</th><th>End</th><th>Recording</th></tr></thead>
+                        <tbody id="sessions-table"></tbody>
+                    </table>
+                </div>
+
+                <div class="section" id="section-recordings">
+                    <h2>Session Recordings</h2>
+                    <button class="btn-sm" onclick="loadRecordings()">Refresh</button>
+                    <table style="margin-top:10px">
+                        <thead><tr><th>Filename</th><th>Size</th><th>Date</th><th>Action</th></tr></thead>
+                        <tbody id="recordings-table"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recording Player Modal -->
+    <div class="modal" id="playerModal">
+        <div class="modal-content" style="width:90%;max-width:1000px;max-height:90vh;overflow:hidden">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <h3 id="playerTitle">Recording Playback</h3>
+                <span class="close" onclick="closeModal('playerModal')" style="cursor:pointer;font-size:20px">&times;</span>
+            </div>
+            <div id="terminal-container" style="height:450px;background:#000;border-radius:4px;overflow:hidden"></div>
+            <div style="margin-top:15px;display:flex;align-items:center;gap:15px;flex-wrap:wrap">
+                <button class="btn-sm" id="playBtn" onclick="togglePlayback()" style="min-width:70px">▶ Play</button>
+                <button class="btn-sm" onclick="restartPlayback()">⟲ Restart</button>
+                <div style="display:flex;align-items:center;gap:5px">
+                    <span>Speed:</span>
+                    <select id="playbackSpeed" onchange="updatePlaybackSpeed()" style="padding:3px">
+                        <option value="0.25">0.25x</option>
+                        <option value="0.5">0.5x</option>
+                        <option value="1" selected>1x</option>
+                        <option value="2">2x</option>
+                        <option value="4">4x</option>
+                        <option value="8">8x</option>
+                    </select>
+                </div>
+                <div style="flex:1;display:flex;align-items:center;gap:10px">
+                    <span id="currentTime">0:00</span>
+                    <input type="range" id="progressBar" min="0" max="100" value="0" 
+                           style="flex:1;cursor:pointer" onchange="seekTo(this.value)" oninput="seekPreview(this.value)">
+                    <span id="totalTime">0:00</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="addHostModal">
+        <div class="modal-content">
+            <h3 id="hostModalTitle">Add Host</h3>
+            <form id="addHostForm">
+                <input type="hidden" name="id" id="hostEditId">
+                <div class="form-group"><label>Name</label><input type="text" name="name" id="hostName" required></div>
+                <div class="form-group"><label>Address</label><input type="text" name="addr" id="hostAddr" required></div>
+                <div class="form-group"><label>Port</label><input type="number" name="port" id="hostPort" value="22" required></div>
+                <div class="form-group"><label>SSH User</label><input type="text" name="user" id="hostUser" placeholder="e.g., root"></div>
+                <div class="form-group"><label>SSH Key</label><select name="key_id" id="hostKeyId"><option value="">-- None --</option></select></div>
+                <div class="form-group"><label>Groups (comma sep)</label><input type="text" name="groups" id="hostGroups"></div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-sm" onclick="closeModal('addHostModal')">Cancel</button>
+                    <button type="submit" class="btn-sm btn-add" id="hostSubmitBtn">Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal" id="addUserModal">
+        <div class="modal-content">
+            <h3 id="userModalTitle">Add User</h3>
+            <form id="addUserForm">
+                <input type="hidden" name="id" id="userEditId">
+                <div class="form-group"><label>Username</label><input type="text" name="username" id="userUsername" required></div>
+                <div class="form-group" id="passwordGroup"><label>Password</label><input type="password" name="password" id="userPassword"></div>
+                <div class="form-group"><label>Groups (comma sep)</label><input type="text" name="groups" id="userGroups"></div>
+                <div class="form-group"><label>Allowed Hosts</label><input type="text" name="allowed_hosts" id="userAllowedHosts" placeholder="* for all, or comma-sep list"></div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-sm" onclick="closeModal('addUserModal')">Cancel</button>
+                    <button type="submit" class="btn-sm btn-add" id="userSubmitBtn">Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal" id="addKeyModal">
+        <div class="modal-content">
+            <h3>Generate SSH Key</h3>
+            <form id="addKeyForm">
+                <div class="form-group"><label>Name</label><input type="text" name="name" required></div>
+                <div class="form-group">
+                    <label>Type</label>
+                    <select name="key_type">
+                        <option value="ed25519">ED25519</option>
+                        <option value="rsa-4096">RSA 4096</option>
+                    </select>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-sm" onclick="closeModal('addKeyModal')">Cancel</button>
+                    <button type="submit" class="btn-sm btn-add">Generate</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let token = localStorage.getItem('token');
+        let currentUser = null;
+
+        if (token) checkAuth();
+
+        document.getElementById('loginForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const err = document.getElementById('loginError');
+            err.textContent = '';
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('username').value,
+                        password: document.getElementById('password').value
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Login failed');
+                token = data.token;
+                localStorage.setItem('token', token);
+                currentUser = data.user;
+                showDashboard();
+            } catch (e) { err.textContent = e.message; }
+        };
+
+        async function checkAuth() {
+            try {
+                const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (res.ok) { currentUser = await res.json(); showDashboard(); }
+                else { localStorage.removeItem('token'); token = null; }
+            } catch (e) { localStorage.removeItem('token'); token = null; }
+        }
+
+        let allKeys = []; // cache for key dropdown
+        let allHosts = []; // cache for allowed_hosts display
+
+        function showDashboard() {
+            document.getElementById('loginContainer').classList.add('hidden');
+            document.getElementById('dashboard').classList.add('active');
+            document.getElementById('currentUser').textContent = currentUser.username;
+            loadKeysCache(); // preload keys for dropdown
+            
+            // Initialize routing
+            initRouter();
+        }
+
+        async function loadKeysCache() {
+            try {
+                allKeys = await (await fetch('/api/keys', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+            } catch (e) { allKeys = []; }
+        }
+
+        async function logout() {
+            await fetch('/api/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
+            localStorage.removeItem('token');
+            location.reload();
+        }
+
+        // ============================================================
+        // Hash-based Routing
+        // ============================================================
+        const validSections = ['overview', 'hosts', 'users', 'keys', 'sessions', 'recordings'];
+        
+        function initRouter() {
+            // Listen for hash changes
+            window.addEventListener('hashchange', handleRouteChange);
+            
+            // Handle initial route
+            handleRouteChange();
+        }
+        
+        function handleRouteChange() {
+            let hash = window.location.hash.slice(1); // Remove #
+            
+            // Default to overview if no hash or invalid hash
+            if (!hash || !validSections.includes(hash)) {
+                hash = 'overview';
+                // Update URL without triggering another hashchange
+                history.replaceState(null, '', '#' + hash);
+            }
+            
+            showSection(hash);
+        }
+        
+        function navigateTo(section) {
+            window.location.hash = section;
+        }
+
+        function showSection(s) {
+            // Update sections visibility
+            document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
+            const sectionEl = document.getElementById('section-' + s);
+            if (sectionEl) {
+                sectionEl.classList.add('active');
+            }
+            
+            // Update sidebar active state
+            document.querySelectorAll('.sidebar a').forEach(a => {
+                a.classList.remove('active');
+                if (a.getAttribute('data-section') === s) {
+                    a.classList.add('active');
+                }
+            });
+            
+            // Load section data
+            if (s === 'overview') loadStats();
+            else if (s === 'hosts') loadHosts();
+            else if (s === 'users') loadUsers();
+            else if (s === 'keys') loadKeys();
+            else if (s === 'sessions') loadSessions();
+            else if (s === 'recordings') loadRecordings();
+        }
+
+        async function loadStats() {
+            try {
+                const data = await (await fetch('/api/stats', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                document.getElementById('stat-hosts').textContent = data.hosts || 0;
+                document.getElementById('stat-users').textContent = data.users || 0;
+                document.getElementById('stat-active-sessions').textContent = data.active_sessions || 0;
+                document.getElementById('stat-keys').textContent = data.ssh_keys || 0;
+            } catch (e) {}
+        }
+
+        function getKeyName(keyId) {
+            if (!keyId) return '-';
+            const k = allKeys.find(k => k.id === keyId);
+            return k ? k.name : keyId.slice(0,8);
+        }
+
+        async function loadHosts() {
+            try {
+                const hosts = await (await fetch('/api/hosts', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                allHosts = hosts || [];
+                document.getElementById('hosts-table').innerHTML = allHosts.map(h => 
+                    `<tr>
+                        <td>${h.name}</td>
+                        <td>${h.addr}</td>
+                        <td>${h.port}</td>
+                        <td>${getKeyName(h.key_id)}</td>
+                        <td>${h.user || 'root'}</td>
+                        <td>
+                            <button class="btn-sm" onclick="editHost('${h.id}')">Edit</button>
+                            <button class="btn-sm btn-del" onclick="deleteHost('${h.id}')">Del</button>
+                        </td>
+                    </tr>`
+                ).join('');
+            } catch (e) {}
+        }
+
+        function sourceLabel(src) {
+            if (src === 'ssh') return '<span style="color:#0af">SSH</span>';
+            if (src === 'oidc') return '<span style="color:#fa0">OIDC</span>';
+            return 'Local';
+        }
+
+        async function loadUsers() {
+            try {
+                const users = await (await fetch('/api/users', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                document.getElementById('users-table').innerHTML = (users || []).map(u => 
+                    `<tr>
+                        <td>${u.username}</td>
+                        <td>${sourceLabel(u.source)}</td>
+                        <td>${(u.groups||[]).join(', ') || '-'}</td>
+                        <td>${(u.allowed_hosts||[]).join(', ') || '*'}</td>
+                        <td>${u.is_active ? '<span class="active-badge">Active</span>' : 'Inactive'}</td>
+                        <td>${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '-'}</td>
+                        <td>
+                            ${u.username === 'admin' ? '-' : `<button class="btn-sm" onclick="editUser('${u.id}')">Edit</button> <button class="btn-sm btn-del" onclick="deleteUser('${u.id}')">Del</button>`}
+                        </td>
+                    </tr>`
+                ).join('');
+            } catch (e) {}
+        }
+
+        function getHostsUsingKey(keyId) {
+            return allHosts.filter(h => h.key_id === keyId).map(h => h.name).join(', ') || '-';
+        }
+
+        async function loadKeys() {
+            try {
+                const keys = await (await fetch('/api/keys', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                allKeys = keys || [];
+                document.getElementById('keys-table').innerHTML = allKeys.map(k => 
+                    `<tr>
+                        <td>${k.name}</td>
+                        <td>${k.key_type}</td>
+                        <td><code style="font-size:11px">${k.fingerprint||'-'}</code></td>
+                        <td>${getHostsUsingKey(k.id)}</td>
+                        <td>${new Date(k.created_at).toLocaleDateString()}</td>
+                        <td>
+                            <button class="btn-sm" onclick="copyKey('${btoa(k.public_key||'')}')">Copy Pub</button>
+                            <button class="btn-sm btn-del" onclick="deleteKey('${k.id}')">Del</button>
+                        </td>
+                    </tr>`
+                ).join('');
+            } catch (e) {}
+        }
+
+        async function loadSessions() {
+            try {
+                // Load active sessions
+                const activeSessions = await (await fetch('/api/sessions/active', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                document.getElementById('active-sessions-table').innerHTML = activeSessions.length ? activeSessions.map(s => {
+                    const duration = formatDuration(new Date() - new Date(s.start_time));
+                    return `<tr><td>${s.username}</td><td>${s.source_ip}</td><td>${s.target_host}</td><td>${new Date(s.start_time).toLocaleString()}</td><td>${duration}</td></tr>`;
+                }).join('') : '<tr><td colspan="5" style="text-align:center;color:#888">No active sessions</td></tr>';
+
+                // Load all sessions (history)
+                const sessions = await (await fetch('/api/sessions', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                const historySessions = sessions.filter(s => s.end_time);
+                document.getElementById('sessions-table').innerHTML = historySessions.length ? historySessions.map(s => 
+                    `<tr><td>${s.username}</td><td>${s.source_ip}</td><td>${s.target_host}</td><td>${new Date(s.start_time).toLocaleString()}</td><td>${new Date(s.end_time).toLocaleString()}</td><td>${s.recording ? `<button class="btn-sm" onclick="playRecording('${s.recording}')">Play</button>` : '-'}</td></tr>`
+                ).join('') : '<tr><td colspan="6" style="text-align:center;color:#888">No session history</td></tr>';
+            } catch (e) { console.error(e); }
+        }
+
+        function formatDuration(ms) {
+            const seconds = Math.floor(ms / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            if (hours > 0) return `${hours}h ${minutes % 60}m`;
+            if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+            return `${seconds}s`;
+        }
+
+        async function loadRecordings() {
+            try {
+                const recordings = await (await fetch('/api/recordings', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                document.getElementById('recordings-table').innerHTML = recordings.length ? recordings.map(r => 
+                    `<tr><td>${r.name}</td><td>${formatSize(r.size)}</td><td>${new Date(r.mod_time).toLocaleString()}</td><td><button class="btn-sm" onclick="playRecording('${r.name}')">Play</button> <button class="btn-sm btn-del" onclick="deleteRecording('${r.name}')">Del</button></td></tr>`
+                ).join('') : '<tr><td colspan="4" style="text-align:center;color:#888">No recordings found</td></tr>';
+            } catch (e) { console.error(e); }
+        }
+
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        // ============================================================
+        // xterm.js based Recording Player (asciinema-like experience)
+        // ============================================================
+        let term = null;
+        let fitAddon = null;
+        let playbackData = [];
+        let playbackIndex = 0;
+        let playbackTimer = null;
+        let playbackSpeed = 1;
+        let isPlaying = false;
+        let totalDuration = 0;
+        let currentFilename = '';
+
+        function initTerminal() {
+            if (term) {
+                term.dispose();
+            }
+            
+            term = new Terminal({
+                cursorBlink: false,
+                cursorStyle: 'block',
+                fontSize: 14,
+                fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                theme: {
+                    background: '#1e1e1e',
+                    foreground: '#d4d4d4',
+                    cursor: '#d4d4d4',
+                    black: '#000000',
+                    red: '#cd3131',
+                    green: '#0dbc79',
+                    yellow: '#e5e510',
+                    blue: '#2472c8',
+                    magenta: '#bc3fbc',
+                    cyan: '#11a8cd',
+                    white: '#e5e5e5',
+                    brightBlack: '#666666',
+                    brightRed: '#f14c4c',
+                    brightGreen: '#23d18b',
+                    brightYellow: '#f5f543',
+                    brightBlue: '#3b8eea',
+                    brightMagenta: '#d670d6',
+                    brightCyan: '#29b8db',
+                    brightWhite: '#ffffff'
+                },
+                scrollback: 5000,
+                convertEol: true
+            });
+            
+            fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+            
+            const container = document.getElementById('terminal-container');
+            container.innerHTML = '';
+            term.open(container);
+            
+            // Fit terminal to container
+            setTimeout(() => {
+                fitAddon.fit();
+            }, 100);
+        }
+
+        async function playRecording(filename) {
+            try {
+                currentFilename = filename;
+                document.getElementById('playerTitle').textContent = 'Recording: ' + filename;
+                
+                const res = await fetch('/api/recordings/' + filename, { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!res.ok) throw new Error('Failed to load recording');
+                const text = await res.text();
+                const lines = text.trim().split('\n');
+                
+                // Parse header
+                const header = JSON.parse(lines[0]);
+                
+                // Parse events: {"time": ms, "type": "o"|"i", "data": "..."}
+                playbackData = [];
+                for (let i = 1; i < lines.length; i++) {
+                    try {
+                        const obj = JSON.parse(lines[i]);
+                        // time in ms, convert to seconds
+                        playbackData.push({
+                            time: obj.time / 1000,
+                            type: obj.type,
+                            data: obj.data
+                        });
+                    } catch (e) {
+                        console.warn('Failed to parse line:', lines[i]);
+                    }
+                }
+                
+                if (playbackData.length === 0) {
+                    alert('Recording is empty');
+                    return;
+                }
+                
+                totalDuration = playbackData[playbackData.length - 1].time;
+                playbackIndex = 0;
+                isPlaying = false;
+                
+                // Reset UI
+                document.getElementById('playBtn').innerHTML = '▶ Play';
+                document.getElementById('progressBar').value = 0;
+                document.getElementById('progressBar').max = totalDuration * 100;
+                document.getElementById('currentTime').textContent = '0:00';
+                document.getElementById('totalTime').textContent = formatTime(totalDuration);
+                document.getElementById('playbackSpeed').value = '1';
+                playbackSpeed = 1;
+                
+                showModal('playerModal');
+                
+                // Initialize terminal after modal is visible
+                setTimeout(() => {
+                    initTerminal();
+                    // Resize terminal to match header dimensions if available
+                    if (header.width && header.height) {
+                        term.resize(header.width, header.height);
+                    }
+                }, 150);
+                
+            } catch (e) {
+                alert('Failed to load recording: ' + e.message);
+                console.error(e);
+            }
+        }
+
+        function togglePlayback() {
+            if (isPlaying) {
+                pausePlayback();
+            } else {
+                startPlayback();
+            }
+        }
+
+        function startPlayback() {
+            if (playbackIndex >= playbackData.length) {
+                // Restart if at end
+                restartPlayback();
+            }
+            isPlaying = true;
+            document.getElementById('playBtn').innerHTML = '⏸ Pause';
+            scheduleNextFrame();
+        }
+
+        function pausePlayback() {
+            isPlaying = false;
+            if (playbackTimer) {
+                clearTimeout(playbackTimer);
+                playbackTimer = null;
+            }
+            document.getElementById('playBtn').innerHTML = '▶ Play';
+        }
+
+        function scheduleNextFrame() {
+            if (!isPlaying || playbackIndex >= playbackData.length) {
+                if (playbackIndex >= playbackData.length) {
+                    isPlaying = false;
+                    document.getElementById('playBtn').innerHTML = '▶ Play';
+                }
+                return;
+            }
+            
+            const currentEvent = playbackData[playbackIndex];
+            const prevTime = playbackIndex > 0 ? playbackData[playbackIndex - 1].time : 0;
+            let delay = (currentEvent.time - prevTime) * 1000 / playbackSpeed;
+            
+            // Cap maximum delay to 2 seconds for better UX
+            delay = Math.min(delay, 2000 / playbackSpeed);
+            delay = Math.max(delay, 1);
+            
+            playbackTimer = setTimeout(() => {
+                renderFrame(playbackIndex);
+                playbackIndex++;
+                updateProgress();
+                scheduleNextFrame();
+            }, delay);
+        }
+
+        function renderFrame(index) {
+            if (!term || index >= playbackData.length) return;
+            
+            const event = playbackData[index];
+            if (event.type === 'o') {
+                term.write(event.data);
+            }
+        }
+
+        function renderUpToIndex(targetIndex) {
+            if (!term) return;
+            term.reset();
+            
+            for (let i = 0; i <= targetIndex && i < playbackData.length; i++) {
+                const event = playbackData[i];
+                if (event.type === 'o') {
+                    term.write(event.data);
+                }
+            }
+        }
+
+        function restartPlayback() {
+            pausePlayback();
+            playbackIndex = 0;
+            if (term) {
+                term.reset();
+            }
+            updateProgress();
+        }
+
+        function updatePlaybackSpeed() {
+            playbackSpeed = parseFloat(document.getElementById('playbackSpeed').value);
+        }
+
+        function updateProgress() {
+            if (playbackData.length === 0) return;
+            
+            const currentTime = playbackIndex > 0 ? playbackData[Math.min(playbackIndex, playbackData.length - 1)].time : 0;
+            document.getElementById('currentTime').textContent = formatTime(currentTime);
+            document.getElementById('progressBar').value = currentTime * 100;
+        }
+
+        function seekPreview(value) {
+            const time = value / 100;
+            document.getElementById('currentTime').textContent = formatTime(time);
+        }
+
+        function seekTo(value) {
+            const targetTime = value / 100;
+            
+            // Find the index closest to target time
+            let targetIndex = 0;
+            for (let i = 0; i < playbackData.length; i++) {
+                if (playbackData[i].time <= targetTime) {
+                    targetIndex = i;
+                } else {
+                    break;
+                }
+            }
+            
+            const wasPlaying = isPlaying;
+            pausePlayback();
+            
+            playbackIndex = targetIndex;
+            renderUpToIndex(targetIndex);
+            updateProgress();
+            
+            if (wasPlaying) {
+                startPlayback();
+            }
+        }
+
+        function formatTime(seconds) {
+            if (isNaN(seconds) || seconds === undefined) return '0:00';
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        async function deleteRecording(filename) {
+            if (!confirm('Delete recording "' + filename + '"?')) return;
+            try {
+                await fetch('/api/recordings/' + filename, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+                loadRecordings();
+            } catch (e) { console.error(e); }
+        }
+
+        function showModal(id) { 
+            document.getElementById(id).classList.add('active'); 
+            if (id === 'addHostModal') populateKeyDropdown();
+        }
+        function closeModal(id) { 
+            document.getElementById(id).classList.remove('active');
+            if (id === 'playerModal') {
+                pausePlayback();
+                if (term) {
+                    term.dispose();
+                    term = null;
+                }
+            }
+        }
+
+        function populateKeyDropdown() {
+            const sel = document.getElementById('hostKeyId');
+            sel.innerHTML = '<option value="">-- None --</option>' + allKeys.map(k => 
+                `<option value="${k.id}">${k.name} (${k.key_type})</option>`
+            ).join('');
+        }
+
+        function resetHostForm() {
+            document.getElementById('hostModalTitle').textContent = 'Add Host';
+            document.getElementById('hostSubmitBtn').textContent = 'Add';
+            document.getElementById('hostEditId').value = '';
+            document.getElementById('hostName').value = '';
+            document.getElementById('hostAddr').value = '';
+            document.getElementById('hostPort').value = '22';
+            document.getElementById('hostUser').value = '';
+            document.getElementById('hostKeyId').value = '';
+            document.getElementById('hostGroups').value = '';
+        }
+
+        function editHost(id) {
+            const h = allHosts.find(h => h.id === id);
+            if (!h) return;
+            document.getElementById('hostModalTitle').textContent = 'Edit Host';
+            document.getElementById('hostSubmitBtn').textContent = 'Save';
+            document.getElementById('hostEditId').value = h.id;
+            document.getElementById('hostName').value = h.name;
+            document.getElementById('hostAddr').value = h.addr;
+            document.getElementById('hostPort').value = h.port;
+            document.getElementById('hostUser').value = h.user || '';
+            document.getElementById('hostGroups').value = (h.groups||[]).join(', ');
+            populateKeyDropdown();
+            document.getElementById('hostKeyId').value = h.key_id || '';
+            showModal('addHostModal');
+        }
+
+        document.getElementById('addHostForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const f = e.target;
+            const id = document.getElementById('hostEditId').value;
+            const data = { 
+                name: f.name.value, 
+                addr: f.addr.value, 
+                port: parseInt(f.port.value), 
+                user: f.user.value || 'root',
+                key_id: f.key_id.value || '',
+                groups: f.groups.value ? f.groups.value.split(',').map(g=>g.trim()) : [] 
+            };
+            if (id) {
+                await fetch('/api/hosts/' + id, {
+                    method: 'PUT',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+            } else {
+                await fetch('/api/hosts', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+            }
+            closeModal('addHostModal'); resetHostForm(); loadHosts();
+        };
+
+        let editingUserId = null;
+        function resetUserForm() {
+            editingUserId = null;
+            document.getElementById('userModalTitle').textContent = 'Add User';
+            document.getElementById('userSubmitBtn').textContent = 'Add';
+            document.getElementById('userEditId').value = '';
+            document.getElementById('userUsername').value = '';
+            document.getElementById('userPassword').value = '';
+            document.getElementById('userGroups').value = '';
+            document.getElementById('userAllowedHosts').value = '';
+            document.getElementById('passwordGroup').style.display = '';
+            document.getElementById('userUsername').removeAttribute('readonly');
+        }
+
+        async function editUser(id) {
+            try {
+                const users = await (await fetch('/api/users', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                const u = (users||[]).find(u => u.id === id);
+                if (!u) return;
+                editingUserId = id;
+                document.getElementById('userModalTitle').textContent = 'Edit User';
+                document.getElementById('userSubmitBtn').textContent = 'Save';
+                document.getElementById('userEditId').value = u.id;
+                document.getElementById('userUsername').value = u.username;
+                document.getElementById('userUsername').setAttribute('readonly', true);
+                document.getElementById('userPassword').value = '';
+                document.getElementById('passwordGroup').style.display = 'none'; // don't show password for edit
+                document.getElementById('userGroups').value = (u.groups||[]).join(', ');
+                document.getElementById('userAllowedHosts').value = (u.allowed_hosts||[]).join(', ');
+                showModal('addUserModal');
+            } catch (e) {}
+        }
+
+        document.getElementById('addUserForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const f = e.target;
+            const id = document.getElementById('userEditId').value;
+            const allowedHosts = f.allowed_hosts.value ? f.allowed_hosts.value.split(',').map(h=>h.trim()) : [];
+            if (id) {
+                await fetch('/api/users/' + id, {
+                    method: 'PUT',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        groups: f.groups.value ? f.groups.value.split(',').map(g=>g.trim()) : [],
+                        allowed_hosts: allowedHosts
+                    })
+                });
+            } else {
+                await fetch('/api/users', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        username: f.username.value, 
+                        password: f.password.value, 
+                        groups: f.groups.value ? f.groups.value.split(',').map(g=>g.trim()) : [],
+                        allowed_hosts: allowedHosts
+                    })
+                });
+            }
+            closeModal('addUserModal'); resetUserForm(); loadUsers();
+        };
+
+        document.getElementById('addKeyForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const f = e.target;
+            await fetch('/api/keys', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: f.name.value, key_type: f.key_type.value })
+            });
+            closeModal('addKeyModal'); f.reset(); loadKeys(); loadKeysCache();
+        };
+
+        async function deleteHost(id) { if (confirm('Delete host?')) { await fetch('/api/hosts/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } }); loadHosts(); } }
+        async function deleteUser(id) { if (confirm('Delete user?')) { await fetch('/api/users/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } }); loadUsers(); } }
+        async function deleteKey(id) { if (confirm('Delete key?')) { await fetch('/api/keys/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } }); loadKeys(); } }
+        function copyKey(b64) { navigator.clipboard.writeText(atob(b64)); alert('Public key copied!'); }
+    </script>
+</body>
+</html>
