@@ -17,6 +17,7 @@ import (
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
 	"github.com/Veritas-Calculus/vc-jump/internal/sshkey"
 	"github.com/Veritas-Calculus/vc-jump/internal/storage"
+	"github.com/gorilla/websocket"
 )
 
 //go:embed static/* static/vendor/*
@@ -30,8 +31,29 @@ type Server struct {
 	session      *auth.SessionManager
 	keyManager   *sshkey.Manager
 	recordingCfg config.RecordingConfig
+	recorder     RecorderInterface
 	mux          *http.ServeMux
 	server       *http.Server
+}
+
+// RecorderInterface defines the interface for session recording.
+type RecorderInterface interface {
+	ListActiveSessions() []ActiveSessionInfo
+	GetSession(id string) (SessionInterface, bool)
+}
+
+// SessionInterface defines the interface for an active session.
+type SessionInterface interface {
+	AddWatcher(ch chan []byte)
+	RemoveWatcher(ch chan []byte)
+}
+
+// ActiveSessionInfo mirrors recording.ActiveSessionInfo.
+type ActiveSessionInfo struct {
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	HostName  string    `json:"hostname"`
+	StartTime time.Time `json:"start_time"`
 }
 
 // DashboardConfig holds dashboard configuration.
@@ -50,6 +72,11 @@ func New(cfg DashboardConfig, store *storage.SQLiteStore, authCfg config.AuthCon
 
 // NewWithRecording creates a new dashboard server with recording support.
 func NewWithRecording(cfg DashboardConfig, store *storage.SQLiteStore, authCfg config.AuthConfig, recordingCfg config.RecordingConfig) (*Server, error) {
+	return NewWithRecorder(cfg, store, authCfg, recordingCfg, nil)
+}
+
+// NewWithRecorder creates a new dashboard server with a recorder for live session viewing.
+func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg config.AuthConfig, recordingCfg config.RecordingConfig, recorder RecorderInterface) (*Server, error) {
 	authenticator, err := auth.NewWithStore(authCfg, store)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create authenticator: %w", err)
@@ -62,6 +89,7 @@ func NewWithRecording(cfg DashboardConfig, store *storage.SQLiteStore, authCfg c
 		session:      auth.NewSessionManager(store, cfg.SessionTimeout),
 		keyManager:   sshkey.New(store),
 		recordingCfg: recordingCfg,
+		recorder:     recorder,
 		mux:          http.NewServeMux(),
 	}
 
@@ -99,6 +127,8 @@ func (s *Server) setupRoutes() {
 	// Session management.
 	s.mux.HandleFunc("/api/sessions", s.requireAuth(s.handleSessions))
 	s.mux.HandleFunc("/api/sessions/active", s.requireAuth(s.handleActiveSessions))
+	s.mux.HandleFunc("/api/sessions/live", s.requireAuth(s.handleLiveSessions))
+	s.mux.HandleFunc("/api/sessions/watch/", s.requireAuth(s.handleWatchSession))
 
 	// Recording management.
 	s.mux.HandleFunc("/api/recordings", s.requireAuth(s.handleRecordings))
@@ -580,6 +610,83 @@ func (s *Server) handleActiveSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonResponse(w, activeSessions)
+}
+
+// handleLiveSessions returns list of live recording sessions that can be watched.
+func (s *Server) handleLiveSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.recorder == nil {
+		s.jsonResponse(w, []ActiveSessionInfo{})
+		return
+	}
+
+	sessions := s.recorder.ListActiveSessions()
+	if sessions == nil {
+		sessions = []ActiveSessionInfo{}
+	}
+	s.jsonResponse(w, sessions)
+}
+
+var wsUpgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true // Allow all origins for internal use.
+	},
+}
+
+// handleWatchSession handles WebSocket connections for watching live sessions.
+func (s *Server) handleWatchSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimPrefix(r.URL.Path, "/api/sessions/watch/")
+	if sessionID == "" {
+		s.jsonError(w, "session id required", http.StatusBadRequest)
+		return
+	}
+
+	// For WebSocket, check token from query param as well (since headers don't work with WS).
+	tokenStr := r.URL.Query().Get("token")
+	if tokenStr != "" {
+		// Validate token from query param.
+		_, err := s.session.ValidateSession(r.Context(), tokenStr)
+		if err != nil {
+			s.jsonError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	if s.recorder == nil {
+		s.jsonError(w, "recording not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	session, ok := s.recorder.GetSession(sessionID)
+	if !ok {
+		s.jsonError(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// Upgrade to WebSocket.
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// Create a channel to receive session output.
+	outputChan := make(chan []byte, 100)
+	session.AddWatcher(outputChan)
+	defer session.RemoveWatcher(outputChan)
+
+	// Send data from session to WebSocket client.
+	for data := range outputChan {
+		if err := conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+			return
+		}
+	}
 }
 
 func (s *Server) handleRecordings(w http.ResponseWriter, r *http.Request) {

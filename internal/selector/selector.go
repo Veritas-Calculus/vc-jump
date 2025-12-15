@@ -58,12 +58,13 @@ func (s *Selector) getAllHosts() []config.HostConfig {
 			var hosts []config.HostConfig
 			for _, h := range dbHosts {
 				hosts = append(hosts, config.HostConfig{
-					Name:    h.Name,
-					Addr:    h.Addr,
-					Port:    h.Port,
-					Users:   h.Users,
-					Groups:  h.Groups,
-					KeyPath: h.KeyPath,
+					Name:                  h.Name,
+					Addr:                  h.Addr,
+					Port:                  h.Port,
+					Users:                 h.Users,
+					Groups:                h.Groups,
+					KeyPath:               h.KeyPath,
+					InsecureIgnoreHostKey: h.InsecureIgnoreHostKey,
 				})
 			}
 			return hosts

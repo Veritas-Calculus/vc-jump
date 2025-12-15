@@ -142,6 +142,11 @@ func (s *Server) SetSQLiteStore(store *storage.SQLiteStore) {
 	s.sshConfig.PublicKeyCallback = s.publicKeyCallback
 }
 
+// GetRecorder returns the session recorder if recording is enabled.
+func (s *Server) GetRecorder() *recording.Recorder {
+	return s.recorder
+}
+
 // Start begins accepting SSH connections.
 func (s *Server) Start() error {
 	s.mu.Lock()

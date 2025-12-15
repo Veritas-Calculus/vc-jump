@@ -207,6 +207,8 @@ type Session struct {
 	recorder  *Recorder
 	mu        sync.Mutex
 	closed    bool
+	watchers  map[chan []byte]struct{}
+	watcherMu sync.RWMutex
 }
 
 // RecordEvent represents a single event in the recording.
@@ -276,6 +278,7 @@ func (r *Recorder) StartSession(username, hostname string) (*Session, error) {
 		encoder:   json.NewEncoder(file),
 		filePath:  filePath,
 		recorder:  r,
+		watchers:  make(map[chan []byte]struct{}),
 	}
 
 	// Write header.
@@ -295,6 +298,35 @@ func (r *Recorder) StartSession(username, hostname string) (*Session, error) {
 
 	r.sessions.Store(sessionID, session)
 	return session, nil
+}
+
+// ActiveSessionInfo contains info about an active session.
+type ActiveSessionInfo struct {
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	HostName  string    `json:"hostname"`
+	StartTime time.Time `json:"start_time"`
+}
+
+// ListActiveSessions returns information about all active recording sessions.
+func (r *Recorder) ListActiveSessions() []ActiveSessionInfo {
+	var sessions []ActiveSessionInfo
+	r.sessions.Range(func(key, value interface{}) bool {
+		s := value.(*Session)
+		s.mu.Lock()
+		closed := s.closed
+		s.mu.Unlock()
+		if !closed {
+			sessions = append(sessions, ActiveSessionInfo{
+				ID:        s.ID,
+				Username:  s.Username,
+				HostName:  s.HostName,
+				StartTime: s.StartTime,
+			})
+		}
+		return true
+	})
+	return sessions
 }
 
 // GetSession retrieves an active session by ID.
@@ -321,11 +353,52 @@ func (s *Session) Close() error {
 	}
 	s.closed = true
 
+	// Close all watchers.
+	s.watcherMu.Lock()
+	for ch := range s.watchers {
+		close(ch)
+	}
+	s.watchers = nil
+	s.watcherMu.Unlock()
+
 	return s.file.Close()
+}
+
+// AddWatcher adds a new watcher channel that receives output data.
+func (s *Session) AddWatcher(ch chan []byte) {
+	s.watcherMu.Lock()
+	defer s.watcherMu.Unlock()
+	if s.watchers != nil {
+		s.watchers[ch] = struct{}{}
+	}
+}
+
+// RemoveWatcher removes a watcher channel.
+func (s *Session) RemoveWatcher(ch chan []byte) {
+	s.watcherMu.Lock()
+	defer s.watcherMu.Unlock()
+	if s.watchers != nil {
+		delete(s.watchers, ch)
+	}
+}
+
+// broadcastToWatchers sends data to all watchers.
+func (s *Session) broadcastToWatchers(data []byte) {
+	s.watcherMu.RLock()
+	defer s.watcherMu.RUnlock()
+	for ch := range s.watchers {
+		select {
+		case ch <- data:
+		default:
+			// Skip if channel is full.
+		}
+	}
 }
 
 // RecordOutput records output data.
 func (s *Session) RecordOutput(data []byte) error {
+	// Broadcast to watchers (output only, not input for security).
+	s.broadcastToWatchers(data)
 	return s.recordEvent("o", data)
 }
 

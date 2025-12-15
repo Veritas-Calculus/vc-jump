@@ -16,17 +16,18 @@ import (
 
 // Host represents a host record in storage.
 type Host struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Addr      string    `json:"addr"`
-	Port      int       `json:"port"`
-	User      string    `json:"user"`  // SSH username for target host.
-	Users     []string  `json:"users"` // Deprecated: use User field.
-	Groups    []string  `json:"groups"`
-	KeyID     string    `json:"key_id,omitempty"`   // Reference to SSH key in database.
-	KeyPath   string    `json:"key_path,omitempty"` // File path for backward compatibility.
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                    string    `json:"id"`
+	Name                  string    `json:"name"`
+	Addr                  string    `json:"addr"`
+	Port                  int       `json:"port"`
+	User                  string    `json:"user"`  // SSH username for target host.
+	Users                 []string  `json:"users"` // Deprecated: use User field.
+	Groups                []string  `json:"groups"`
+	KeyID                 string    `json:"key_id,omitempty"`   // Reference to SSH key in database.
+	KeyPath               string    `json:"key_path,omitempty"` // File path for backward compatibility.
+	InsecureIgnoreHostKey bool      `json:"insecure_ignore_host_key,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // UserSource represents the authentication source of a user.

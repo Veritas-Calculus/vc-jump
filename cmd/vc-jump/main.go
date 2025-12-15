@@ -14,6 +14,7 @@ import (
 	"github.com/Veritas-Calculus/vc-jump/internal/auth"
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
 	"github.com/Veritas-Calculus/vc-jump/internal/dashboard"
+	"github.com/Veritas-Calculus/vc-jump/internal/recording"
 	"github.com/Veritas-Calculus/vc-jump/internal/server"
 	"github.com/Veritas-Calculus/vc-jump/internal/storage"
 )
@@ -115,7 +116,13 @@ func main() {
 			KeyFile:        cfg.Dashboard.KeyFile,
 		}
 
-		dashboardServer, err = dashboard.NewWithRecording(dashboardCfg, store, cfg.Auth, cfg.Recording)
+		// Create recorder adapter for dashboard.
+		var recorderAdapter dashboard.RecorderInterface
+		if recorder := srv.GetRecorder(); recorder != nil {
+			recorderAdapter = &recorderAdapterImpl{recorder: recorder}
+		}
+
+		dashboardServer, err = dashboard.NewWithRecorder(dashboardCfg, store, cfg.Auth, cfg.Recording, recorderAdapter)
 		if err != nil {
 			log.Printf("failed to create dashboard: %v", err)
 		} else {
@@ -154,4 +161,31 @@ func main() {
 	if err := srv.Start(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// recorderAdapterImpl adapts recording.Recorder to dashboard.RecorderInterface.
+type recorderAdapterImpl struct {
+	recorder *recording.Recorder
+}
+
+func (a *recorderAdapterImpl) ListActiveSessions() []dashboard.ActiveSessionInfo {
+	sessions := a.recorder.ListActiveSessions()
+	result := make([]dashboard.ActiveSessionInfo, len(sessions))
+	for i, s := range sessions {
+		result[i] = dashboard.ActiveSessionInfo{
+			ID:        s.ID,
+			Username:  s.Username,
+			HostName:  s.HostName,
+			StartTime: s.StartTime,
+		}
+	}
+	return result
+}
+
+func (a *recorderAdapterImpl) GetSession(id string) (dashboard.SessionInterface, bool) {
+	session, ok := a.recorder.GetSession(id)
+	if !ok {
+		return nil, false
+	}
+	return session, true
 }

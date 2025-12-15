@@ -153,6 +153,12 @@
                     <h2>Sessions</h2>
                     <button class="btn-sm" onclick="loadSessions()">Refresh</button>
                     
+                    <h3 style="margin-top:20px">Live Sessions (Real-time Viewing)</h3>
+                    <table style="margin-top:10px">
+                        <thead><tr><th>User</th><th>Target</th><th>Start</th><th>Duration</th><th>Action</th></tr></thead>
+                        <tbody id="live-sessions-table"></tbody>
+                    </table>
+                    
                     <h3 style="margin-top:20px">Active Sessions</h3>
                     <table style="margin-top:10px">
                         <thead><tr><th>User</th><th>Source</th><th>Target</th><th>Start</th><th>Duration</th></tr></thead>
@@ -227,6 +233,7 @@
                 <div class="form-group"><label>SSH User</label><input type="text" name="user" id="hostUser" placeholder="e.g., root"></div>
                 <div class="form-group"><label>SSH Key</label><select name="key_id" id="hostKeyId"><option value="">-- None --</option></select></div>
                 <div class="form-group"><label>Groups (comma sep)</label><input type="text" name="groups" id="hostGroups"></div>
+                <div class="form-group"><label><input type="checkbox" name="insecure_ignore_host_key" id="hostInsecure"> Skip Host Key Verification</label></div>
                 <div class="modal-actions">
                     <button type="button" class="btn-sm" onclick="closeModal('addHostModal')">Cancel</button>
                     <button type="submit" class="btn-sm btn-add" id="hostSubmitBtn">Add</button>
@@ -282,6 +289,17 @@
                 <button type="button" class="btn-sm" id="confirmCancelBtn" onclick="closeConfirmModal()">Cancel</button>
                 <button type="button" class="btn-sm btn-del" id="confirmOkBtn">Confirm</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Live Session Watch Modal -->
+    <div class="modal" id="watchSessionModal">
+        <div class="modal-content" style="width:900px;max-width:95vw;height:600px;max-height:85vh;display:flex;flex-direction:column">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <h3 id="watchSessionTitle">Live Session</h3>
+                <button type="button" class="btn-sm" onclick="closeWatchSession()">✕ Close</button>
+            </div>
+            <div id="watchTerminal" style="flex:1;background:#000;border-radius:4px;overflow:hidden"></div>
         </div>
     </div>
 
@@ -488,6 +506,13 @@
 
         async function loadSessions() {
             try {
+                // Load live sessions (for real-time viewing)
+                const liveSessions = await (await fetch('/api/sessions/live', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                document.getElementById('live-sessions-table').innerHTML = liveSessions.length ? liveSessions.map(s => {
+                    const duration = formatDuration(new Date() - new Date(s.start_time));
+                    return `<tr><td>${escapeHtml(s.username)}</td><td>${escapeHtml(s.hostname)}</td><td>${new Date(s.start_time).toLocaleString()}</td><td>${duration}</td><td><button class="btn-sm" style="background:#4CAF50" onclick="watchSession('${escapeJs(s.id)}', '${escapeJs(s.username)}', '${escapeJs(s.hostname)}')">👁 Watch Live</button></td></tr>`;
+                }).join('') : '<tr><td colspan="5" style="text-align:center;color:#888">No live sessions (recording must be enabled)</td></tr>';
+                
                 // Load active sessions
                 const activeSessions = await (await fetch('/api/sessions/active', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
                 document.getElementById('active-sessions-table').innerHTML = activeSessions.length ? activeSessions.map(s => {
@@ -670,6 +695,78 @@
             setTimeout(() => {
                 fitAddon.fit();
             }, 100);
+        }
+
+        // Live session watching.
+        let watchWs = null;
+        let watchTerminal = null;
+
+        function watchSession(sessionId, username, hostname) {
+            document.getElementById('watchSessionTitle').textContent = `Live: ${username}@${hostname}`;
+            document.getElementById('watchSessionModal').classList.add('active');
+            
+            // Initialize terminal after modal is visible.
+            setTimeout(() => {
+                const termContainer = document.getElementById('watchTerminal');
+                termContainer.innerHTML = '';
+                
+                watchTerminal = new Terminal({
+                    cursorBlink: false,
+                    fontSize: 14,
+                    fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                    theme: { background: '#1e1e1e', foreground: '#d4d4d4' }
+                });
+                
+                const fitAddon = new FitAddon.FitAddon();
+                watchTerminal.loadAddon(fitAddon);
+                watchTerminal.open(termContainer);
+                fitAddon.fit();
+                
+                watchTerminal.writeln('\x1b[33m--- Live session view (read-only) ---\x1b[0m\r\n');
+                
+                // Connect WebSocket.
+                const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${wsProtocol}//${location.host}/api/sessions/watch/${sessionId}?token=${token}`;
+                
+                watchWs = new WebSocket(wsUrl);
+                watchWs.binaryType = 'arraybuffer';
+                
+                watchWs.onopen = () => {
+                    watchTerminal.writeln('\x1b[32m--- Connected ---\x1b[0m\r\n');
+                };
+                
+                watchWs.onmessage = (event) => {
+                    if (event.data instanceof ArrayBuffer) {
+                        const text = new TextDecoder().decode(event.data);
+                        watchTerminal.write(text);
+                    } else {
+                        watchTerminal.write(event.data);
+                    }
+                };
+                
+                watchWs.onclose = () => {
+                    watchTerminal.writeln('\r\n\x1b[33m--- Session ended ---\x1b[0m');
+                };
+                
+                watchWs.onerror = (err) => {
+                    watchTerminal.writeln('\r\n\x1b[31m--- Connection error ---\x1b[0m');
+                };
+                
+                // Handle window resize.
+                window.addEventListener('resize', () => fitAddon.fit());
+            }, 100);
+        }
+
+        function closeWatchSession() {
+            if (watchWs) {
+                watchWs.close();
+                watchWs = null;
+            }
+            if (watchTerminal) {
+                watchTerminal.dispose();
+                watchTerminal = null;
+            }
+            document.getElementById('watchSessionModal').classList.remove('active');
         }
 
         async function playRecording(filename) {
@@ -983,6 +1080,7 @@
             document.getElementById('hostUser').value = '';
             document.getElementById('hostKeyId').value = '';
             document.getElementById('hostGroups').value = '';
+            document.getElementById('hostInsecure').checked = false;
         }
 
         function editHost(id) {
@@ -996,6 +1094,7 @@
             document.getElementById('hostPort').value = h.port;
             document.getElementById('hostUser').value = h.user || '';
             document.getElementById('hostGroups').value = (h.groups||[]).join(', ');
+            document.getElementById('hostInsecure').checked = h.insecure_ignore_host_key || false;
             populateKeyDropdown();
             document.getElementById('hostKeyId').value = h.key_id || '';
             showModal('addHostModal');
@@ -1011,7 +1110,8 @@
                 port: parseInt(f.port.value), 
                 user: f.user.value || 'root',
                 key_id: f.key_id.value || '',
-                groups: f.groups.value ? f.groups.value.split(',').map(g=>g.trim()) : [] 
+                groups: f.groups.value ? f.groups.value.split(',').map(g=>g.trim()) : [],
+                insecure_ignore_host_key: document.getElementById('hostInsecure').checked
             };
             if (id) {
                 await fetch('/api/hosts/' + id, {

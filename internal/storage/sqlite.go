@@ -73,6 +73,7 @@ func (s *SQLiteStore) initSchema() error {
 		users TEXT DEFAULT '[]',
 		groups TEXT DEFAULT '[]',
 		key_id TEXT,
+		insecure_ignore_host_key INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
@@ -170,6 +171,16 @@ func (s *SQLiteStore) runMigrations() error {
 			return err
 		}
 	}
+
+	// Add 'insecure_ignore_host_key' column to hosts if it doesn't exist.
+	_, err = s.db.Exec("ALTER TABLE hosts ADD COLUMN insecure_ignore_host_key INTEGER DEFAULT 0")
+	if err != nil {
+		// Ignore error if column already exists.
+		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -183,10 +194,11 @@ func (s *SQLiteStore) GetHost(ctx context.Context, id string) (*Host, error) {
 	var host Host
 	var usersJSON, groupsJSON string
 	var keyID, user sql.NullString
+	var insecureIgnoreHostKey sql.NullBool
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, name, addr, port, user, users, groups, key_id, created_at, updated_at FROM hosts WHERE id = ?",
+		"SELECT id, name, addr, port, user, users, groups, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts WHERE id = ?",
 		id,
-	).Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &host.CreatedAt, &host.UpdatedAt)
+	).Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, errors.New("host not found")
@@ -202,6 +214,9 @@ func (s *SQLiteStore) GetHost(ctx context.Context, id string) (*Host, error) {
 		host.User = user.String
 	} else {
 		host.User = "root"
+	}
+	if insecureIgnoreHostKey.Valid {
+		host.InsecureIgnoreHostKey = insecureIgnoreHostKey.Bool
 	}
 	if err := json.Unmarshal([]byte(usersJSON), &host.Users); err != nil {
 		host.Users = nil
@@ -221,10 +236,11 @@ func (s *SQLiteStore) GetHostByName(ctx context.Context, name string) (*Host, er
 	var host Host
 	var usersJSON, groupsJSON string
 	var keyID, user sql.NullString
+	var insecureIgnoreHostKey sql.NullBool
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, name, addr, port, user, users, groups, key_id, created_at, updated_at FROM hosts WHERE name = ?",
+		"SELECT id, name, addr, port, user, users, groups, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts WHERE name = ?",
 		name,
-	).Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &host.CreatedAt, &host.UpdatedAt)
+	).Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, errors.New("host not found")
@@ -240,6 +256,9 @@ func (s *SQLiteStore) GetHostByName(ctx context.Context, name string) (*Host, er
 		host.User = user.String
 	} else {
 		host.User = "root"
+	}
+	if insecureIgnoreHostKey.Valid {
+		host.InsecureIgnoreHostKey = insecureIgnoreHostKey.Bool
 	}
 	if err := json.Unmarshal([]byte(usersJSON), &host.Users); err != nil {
 		host.Users = nil
@@ -257,7 +276,7 @@ func (s *SQLiteStore) ListHosts(ctx context.Context) ([]Host, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, name, addr, port, user, users, groups, key_id, created_at, updated_at FROM hosts ORDER BY name",
+		"SELECT id, name, addr, port, user, users, groups, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts ORDER BY name",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list hosts: %w", err)
@@ -269,7 +288,8 @@ func (s *SQLiteStore) ListHosts(ctx context.Context) ([]Host, error) {
 		var host Host
 		var usersJSON, groupsJSON string
 		var keyID, user sql.NullString
-		if err := rows.Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &host.CreatedAt, &host.UpdatedAt); err != nil {
+		var insecureIgnoreHostKey sql.NullBool
+		if err := rows.Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan host: %w", err)
 		}
 
@@ -280,6 +300,9 @@ func (s *SQLiteStore) ListHosts(ctx context.Context) ([]Host, error) {
 			host.User = user.String
 		} else {
 			host.User = "root"
+		}
+		if insecureIgnoreHostKey.Valid {
+			host.InsecureIgnoreHostKey = insecureIgnoreHostKey.Bool
 		}
 		if err := json.Unmarshal([]byte(usersJSON), &host.Users); err != nil {
 			host.Users = nil
@@ -316,9 +339,14 @@ func (s *SQLiteStore) CreateHost(ctx context.Context, host *Host) error {
 		keyID = host.KeyID
 	}
 
+	insecureVal := 0
+	if host.InsecureIgnoreHostKey {
+		insecureVal = 1
+	}
+
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO hosts (id, name, addr, port, user, users, groups, key_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		host.ID, host.Name, host.Addr, host.Port, host.User, string(usersJSON), string(groupsJSON), keyID, host.CreatedAt, host.UpdatedAt,
+		"INSERT INTO hosts (id, name, addr, port, user, users, groups, key_id, insecure_ignore_host_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		host.ID, host.Name, host.Addr, host.Port, host.User, string(usersJSON), string(groupsJSON), keyID, insecureVal, host.CreatedAt, host.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create host: %w", err)
@@ -345,9 +373,14 @@ func (s *SQLiteStore) UpdateHost(ctx context.Context, host *Host) error {
 		keyID = host.KeyID
 	}
 
+	insecureVal := 0
+	if host.InsecureIgnoreHostKey {
+		insecureVal = 1
+	}
+
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE hosts SET name = ?, addr = ?, port = ?, user = ?, users = ?, groups = ?, key_id = ?, updated_at = ? WHERE id = ?",
-		host.Name, host.Addr, host.Port, host.User, string(usersJSON), string(groupsJSON), keyID, host.UpdatedAt, host.ID,
+		"UPDATE hosts SET name = ?, addr = ?, port = ?, user = ?, users = ?, groups = ?, key_id = ?, insecure_ignore_host_key = ?, updated_at = ? WHERE id = ?",
+		host.Name, host.Addr, host.Port, host.User, string(usersJSON), string(groupsJSON), keyID, insecureVal, host.UpdatedAt, host.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update host: %w", err)
