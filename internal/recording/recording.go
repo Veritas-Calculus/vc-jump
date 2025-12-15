@@ -48,9 +48,9 @@ func (s *LocalStorage) Save(ctx context.Context, filename string, data []byte) e
 	return os.WriteFile(filePath, data, 0600)
 }
 
-func (s *LocalStorage) Load(ctx context.Context, filename string) ([]byte, error) {
+func (s *LocalStorage) Load(_ context.Context, filename string) ([]byte, error) {
 	filePath := filepath.Join(s.basePath, filename)
-	return os.ReadFile(filePath)
+	return os.ReadFile(filePath) //nolint:gosec // filePath is constructed from basePath
 }
 
 func (s *LocalStorage) List(ctx context.Context) ([]string, error) {
@@ -205,7 +205,7 @@ func (r *Recorder) StartSession(username, hostname string) (*Session, error) {
 		filePath = filepath.Join(os.TempDir(), filename)
 	}
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600) //nolint:gosec // filePath constructed from safe components
 	if err != nil {
 		return nil, fmt.Errorf("failed to create recording file: %w", err)
 	}
@@ -231,8 +231,8 @@ func (r *Recorder) StartSession(username, hostname string) (*Session, error) {
 		Height:    24,
 	}
 	if err := session.encoder.Encode(header); err != nil {
-		file.Close()
-		os.Remove(filePath)
+		_ = file.Close()
+		_ = os.Remove(filePath)
 		return nil, fmt.Errorf("failed to write recording header: %w", err)
 	}
 
@@ -311,13 +311,13 @@ type recordingWrapper struct {
 func (w *recordingWrapper) Read(p []byte) (int, error) {
 	n, err := w.rw.Read(p)
 	if n > 0 {
-		w.session.RecordInput(p[:n])
+		_ = w.session.RecordInput(p[:n])
 	}
 	return n, err
 }
 
 func (w *recordingWrapper) Write(p []byte) (int, error) {
-	w.session.RecordOutput(p)
+	_ = w.session.RecordOutput(p)
 	return w.rw.Write(p)
 }
 

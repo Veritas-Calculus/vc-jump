@@ -36,7 +36,6 @@ type Server struct {
 	auditor     *audit.Auditor
 	store       *storage.FileStore
 	sqliteStore *storage.SQLiteStore
-	sessions    sync.Map
 	connSem     chan struct{}
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -181,7 +180,7 @@ func (s *Server) Start() error {
 			}()
 		default:
 			s.logger.Infof("max connections reached, rejecting connection from %s", conn.RemoteAddr())
-			conn.Close()
+			_ = conn.Close()
 		}
 	}
 }
@@ -211,13 +210,13 @@ func (s *Server) Stop() error {
 
 	// Close resources.
 	if s.auditor != nil {
-		s.auditor.Close()
+		_ = s.auditor.Close()
 	}
 	if s.store != nil {
-		s.store.Close()
+		_ = s.store.Close()
 	}
 	if s.logger != nil {
-		s.logger.Close()
+		_ = s.logger.Close()
 	}
 
 	return nil
@@ -241,7 +240,7 @@ func (s *Server) createSSHConfig() (*ssh.ServerConfig, error) {
 func (s *Server) loadOrGenerateHostKey() (ssh.Signer, error) {
 	keyPath := s.cfg.Server.HostKeyPath
 
-	keyData, err := os.ReadFile(keyPath)
+	keyData, err := os.ReadFile(keyPath) //nolint:gosec // keyPath from config
 	if err != nil {
 		if os.IsNotExist(err) {
 			return s.generateHostKey(keyPath)
@@ -306,14 +305,14 @@ func (s *Server) publicKeyCallback(conn ssh.ConnMetadata, key ssh.PublicKey) (*s
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.sshConfig)
 	if err != nil {
 		s.logger.Infof("failed to handshake: %v", err)
 		return
 	}
-	defer sshConn.Close()
+	defer func() { _ = sshConn.Close() }()
 
 	username := sshConn.User()
 	sourceIP := sshConn.RemoteAddr().String()
@@ -330,7 +329,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	for newChannel := range chans {
 		if newChannel.ChannelType() != "session" {
-			newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
+			_ = newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
 			continue
 		}
 
@@ -345,7 +344,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) handleSession(sshConn *ssh.ServerConn, channel ssh.Channel, requests <-chan *ssh.Request) {
-	defer channel.Close()
+	defer func() { _ = channel.Close() }()
 
 	username := sshConn.Permissions.Extensions["user"]
 	groups := splitGroups(sshConn.Permissions.Extensions["groups"])
@@ -354,7 +353,7 @@ func (s *Server) handleSession(sshConn *ssh.ServerConn, channel ssh.Channel, req
 	// Get list of accessible hosts for this user.
 	hosts := s.selector.GetAccessibleHosts(username, groups, allowedHosts)
 	if len(hosts) == 0 {
-		io.WriteString(channel, "No accessible hosts found.\r\n")
+		_, _ = io.WriteString(channel, "No accessible hosts found.\r\n")
 		return
 	}
 
@@ -365,17 +364,17 @@ func (s *Server) handleSession(sshConn *ssh.ServerConn, channel ssh.Channel, req
 		case "pty-req":
 			ptyReq = parsePtyRequest(req.Payload)
 			if req.WantReply {
-				req.Reply(true, nil)
+				_ = req.Reply(true, nil)
 			}
 		case "shell":
 			if req.WantReply {
-				req.Reply(true, nil)
+				_ = req.Reply(true, nil)
 			}
 			s.runInteractiveSession(sshConn, channel, ptyReq, username, groups, hosts)
 			return
 		default:
 			if req.WantReply {
-				req.Reply(false, nil)
+				_ = req.Reply(false, nil)
 			}
 		}
 	}
@@ -436,7 +435,7 @@ func (s *Server) runInteractiveSession(
 	}
 	defer func() {
 		if rec != nil {
-			rec.Close()
+			_ = rec.Close()
 		}
 		// Update session record with end time and recording path.
 		if dbSession != nil && s.sqliteStore != nil {
@@ -486,12 +485,12 @@ func (s *Server) runInteractiveSession(
 	if proxyOpts != nil {
 		if err := s.proxy.ConnectWithOptions(s.ctx, proxyChannel, selectedHost, proxyPtyReq, proxyOpts); err != nil {
 			s.logger.Infof("proxy connection failed: %v", err)
-			io.WriteString(channel, fmt.Sprintf("Connection failed: %v\r\n", err))
+			_, _ = io.WriteString(channel, fmt.Sprintf("Connection failed: %v\r\n", err))
 		}
 	} else {
 		if err := s.proxy.Connect(s.ctx, proxyChannel, selectedHost, proxyPtyReq); err != nil {
 			s.logger.Infof("proxy connection failed: %v", err)
-			io.WriteString(channel, fmt.Sprintf("Connection failed: %v\r\n", err))
+			_, _ = io.WriteString(channel, fmt.Sprintf("Connection failed: %v\r\n", err))
 		}
 	}
 }
@@ -571,18 +570,18 @@ func (s *Server) isAdmin(username string, groups []string) bool {
 
 // runAdminConsole provides an interactive admin interface via SSH.
 func (s *Server) runAdminConsole(channel ssh.Channel, username string) {
-	io.WriteString(channel, "\r\n=== VC Jump Admin Console ===\r\n")
-	io.WriteString(channel, fmt.Sprintf("Logged in as: %s\r\n\r\n", username))
+	_, _ = io.WriteString(channel, "\r\n=== VC Jump Admin Console ===\r\n")
+	_, _ = io.WriteString(channel, fmt.Sprintf("Logged in as: %s\r\n\r\n", username))
 
 	for {
-		io.WriteString(channel, "\r\nAdmin Menu:\r\n")
-		io.WriteString(channel, "  [1] List Hosts\r\n")
-		io.WriteString(channel, "  [2] Add Host\r\n")
-		io.WriteString(channel, "  [3] Delete Host\r\n")
-		io.WriteString(channel, "  [4] List Users\r\n")
-		io.WriteString(channel, "  [5] List SSH Keys\r\n")
-		io.WriteString(channel, "  [Q] Exit\r\n")
-		io.WriteString(channel, "\r\nSelect option: ")
+		_, _ = io.WriteString(channel, "\r\nAdmin Menu:\r\n")
+		_, _ = io.WriteString(channel, "  [1] List Hosts\r\n")
+		_, _ = io.WriteString(channel, "  [2] Add Host\r\n")
+		_, _ = io.WriteString(channel, "  [3] Delete Host\r\n")
+		_, _ = io.WriteString(channel, "  [4] List Users\r\n")
+		_, _ = io.WriteString(channel, "  [5] List SSH Keys\r\n")
+		_, _ = io.WriteString(channel, "  [Q] Exit\r\n")
+		_, _ = io.WriteString(channel, "\r\nSelect option: ")
 
 		choice, err := readLine(channel)
 		if err != nil {
@@ -601,29 +600,29 @@ func (s *Server) runAdminConsole(channel ssh.Channel, username string) {
 		case "5":
 			s.adminListKeys(channel)
 		case "q", "Q":
-			io.WriteString(channel, "\r\nGoodbye!\r\n")
+			_, _ = io.WriteString(channel, "\r\nGoodbye!\r\n")
 			return
 		default:
-			io.WriteString(channel, "\r\nInvalid option.\r\n")
+			_, _ = io.WriteString(channel, "\r\nInvalid option.\r\n")
 		}
 	}
 }
 
 func (s *Server) adminListHosts(channel ssh.Channel) {
 	if s.sqliteStore == nil {
-		io.WriteString(channel, "\r\nDatabase not available.\r\n")
+		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
 		return
 	}
 
 	hosts, err := s.sqliteStore.ListHosts(s.ctx)
 	if err != nil {
-		io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
+		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
 		return
 	}
 
-	io.WriteString(channel, "\r\n--- Hosts ---\r\n")
+	_, _ = io.WriteString(channel, "\r\n--- Hosts ---\r\n")
 	if len(hosts) == 0 {
-		io.WriteString(channel, "No hosts configured.\r\n")
+		_, _ = io.WriteString(channel, "No hosts configured.\r\n")
 		return
 	}
 
@@ -635,33 +634,33 @@ func (s *Server) adminListHosts(channel ssh.Channel) {
 				keyInfo = fmt.Sprintf(" [Key: %s]", key.Name)
 			}
 		}
-		io.WriteString(channel, fmt.Sprintf("  %d. %s - %s@%s:%d%s\r\n", i+1, h.Name, h.User, h.Addr, h.Port, keyInfo))
+		_, _ = io.WriteString(channel, fmt.Sprintf("  %d. %s - %s@%s:%d%s\r\n", i+1, h.Name, h.User, h.Addr, h.Port, keyInfo))
 	}
 }
 
 func (s *Server) adminAddHost(channel ssh.Channel) {
 	if s.sqliteStore == nil {
-		io.WriteString(channel, "\r\nDatabase not available.\r\n")
+		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
 		return
 	}
 
-	io.WriteString(channel, "\r\n--- Add Host ---\r\n")
+	_, _ = io.WriteString(channel, "\r\n--- Add Host ---\r\n")
 
-	io.WriteString(channel, "Name: ")
+	_, _ = io.WriteString(channel, "Name: ")
 	name, err := readLine(channel)
 	if err != nil || name == "" {
-		io.WriteString(channel, "\r\nCancelled.\r\n")
+		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
 		return
 	}
 
-	io.WriteString(channel, "Address: ")
+	_, _ = io.WriteString(channel, "Address: ")
 	addr, err := readLine(channel)
 	if err != nil || addr == "" {
-		io.WriteString(channel, "\r\nCancelled.\r\n")
+		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
 		return
 	}
 
-	io.WriteString(channel, "Port [22]: ")
+	_, _ = io.WriteString(channel, "Port [22]: ")
 	portStr, _ := readLine(channel)
 	port := 22
 	if portStr != "" {
@@ -670,7 +669,7 @@ func (s *Server) adminAddHost(channel ssh.Channel) {
 		}
 	}
 
-	io.WriteString(channel, "SSH User [root]: ")
+	_, _ = io.WriteString(channel, "SSH User [root]: ")
 	user, _ := readLine(channel)
 	if user == "" {
 		user = "root"
@@ -680,12 +679,12 @@ func (s *Server) adminAddHost(channel ssh.Channel) {
 	keys, _ := s.sqliteStore.ListSSHKeys(s.ctx)
 	keyID := ""
 	if len(keys) > 0 {
-		io.WriteString(channel, "\r\nAvailable SSH Keys:\r\n")
+		_, _ = io.WriteString(channel, "\r\nAvailable SSH Keys:\r\n")
 		for i, k := range keys {
-			io.WriteString(channel, fmt.Sprintf("  [%d] %s (%s)\r\n", i+1, k.Name, k.KeyType))
+			_, _ = io.WriteString(channel, fmt.Sprintf("  [%d] %s (%s)\r\n", i+1, k.Name, k.KeyType))
 		}
-		io.WriteString(channel, "  [0] None\r\n")
-		io.WriteString(channel, "\r\nSelect key [0]: ")
+		_, _ = io.WriteString(channel, "  [0] None\r\n")
+		_, _ = io.WriteString(channel, "\r\nSelect key [0]: ")
 		keyChoice, _ := readLine(channel)
 		if n, err := strconv.Atoi(keyChoice); err == nil && n >= 1 && n <= len(keys) {
 			keyID = keys[n-1].ID
@@ -701,35 +700,35 @@ func (s *Server) adminAddHost(channel ssh.Channel) {
 	}
 
 	if err := s.sqliteStore.CreateHost(s.ctx, host); err != nil {
-		io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
+		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
 		return
 	}
 
-	io.WriteString(channel, fmt.Sprintf("\r\nHost '%s' created successfully!\r\n", name))
+	_, _ = io.WriteString(channel, fmt.Sprintf("\r\nHost '%s' created successfully!\r\n", name))
 }
 
 func (s *Server) adminDeleteHost(channel ssh.Channel) {
 	if s.sqliteStore == nil {
-		io.WriteString(channel, "\r\nDatabase not available.\r\n")
+		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
 		return
 	}
 
 	hosts, err := s.sqliteStore.ListHosts(s.ctx)
 	if err != nil {
-		io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
+		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
 		return
 	}
 
 	if len(hosts) == 0 {
-		io.WriteString(channel, "\r\nNo hosts to delete.\r\n")
+		_, _ = io.WriteString(channel, "\r\nNo hosts to delete.\r\n")
 		return
 	}
 
-	io.WriteString(channel, "\r\n--- Delete Host ---\r\n")
+	_, _ = io.WriteString(channel, "\r\n--- Delete Host ---\r\n")
 	for i, h := range hosts {
-		io.WriteString(channel, fmt.Sprintf("  [%d] %s (%s:%d)\r\n", i+1, h.Name, h.Addr, h.Port))
+		_, _ = io.WriteString(channel, fmt.Sprintf("  [%d] %s (%s:%d)\r\n", i+1, h.Name, h.Addr, h.Port))
 	}
-	io.WriteString(channel, "\r\nSelect host to delete (0 to cancel): ")
+	_, _ = io.WriteString(channel, "\r\nSelect host to delete (0 to cancel): ")
 
 	choice, err := readLine(channel)
 	if err != nil {
@@ -738,41 +737,41 @@ func (s *Server) adminDeleteHost(channel ssh.Channel) {
 
 	n, err := strconv.Atoi(choice)
 	if err != nil || n < 1 || n > len(hosts) {
-		io.WriteString(channel, "\r\nCancelled.\r\n")
+		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
 		return
 	}
 
 	hostToDelete := hosts[n-1]
-	io.WriteString(channel, fmt.Sprintf("\r\nAre you sure you want to delete '%s'? (y/N): ", hostToDelete.Name))
+	_, _ = io.WriteString(channel, fmt.Sprintf("\r\nAre you sure you want to delete '%s'? (y/N): ", hostToDelete.Name))
 	confirm, _ := readLine(channel)
 	if confirm != "y" && confirm != "Y" {
-		io.WriteString(channel, "\r\nCancelled.\r\n")
+		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
 		return
 	}
 
 	if err := s.sqliteStore.DeleteHost(s.ctx, hostToDelete.ID); err != nil {
-		io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
+		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
 		return
 	}
 
-	io.WriteString(channel, fmt.Sprintf("\r\nHost '%s' deleted successfully!\r\n", hostToDelete.Name))
+	_, _ = io.WriteString(channel, fmt.Sprintf("\r\nHost '%s' deleted successfully!\r\n", hostToDelete.Name))
 }
 
 func (s *Server) adminListUsers(channel ssh.Channel) {
 	if s.sqliteStore == nil {
-		io.WriteString(channel, "\r\nDatabase not available.\r\n")
+		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
 		return
 	}
 
 	users, err := s.sqliteStore.ListUsers(s.ctx)
 	if err != nil {
-		io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
+		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
 		return
 	}
 
-	io.WriteString(channel, "\r\n--- Users ---\r\n")
+	_, _ = io.WriteString(channel, "\r\n--- Users ---\r\n")
 	if len(users) == 0 {
-		io.WriteString(channel, "No users configured.\r\n")
+		_, _ = io.WriteString(channel, "No users configured.\r\n")
 		return
 	}
 
@@ -785,30 +784,30 @@ func (s *Server) adminListUsers(channel ssh.Channel) {
 		if source == "" {
 			source = "local"
 		}
-		io.WriteString(channel, fmt.Sprintf("  %d. %s [%s] (%s)\r\n", i+1, u.Username, source, status))
+		_, _ = io.WriteString(channel, fmt.Sprintf("  %d. %s [%s] (%s)\r\n", i+1, u.Username, source, status))
 	}
 }
 
 func (s *Server) adminListKeys(channel ssh.Channel) {
 	if s.sqliteStore == nil {
-		io.WriteString(channel, "\r\nDatabase not available.\r\n")
+		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
 		return
 	}
 
 	keys, err := s.sqliteStore.ListSSHKeys(s.ctx)
 	if err != nil {
-		io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
+		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
 		return
 	}
 
-	io.WriteString(channel, "\r\n--- SSH Keys ---\r\n")
+	_, _ = io.WriteString(channel, "\r\n--- SSH Keys ---\r\n")
 	if len(keys) == 0 {
-		io.WriteString(channel, "No SSH keys configured.\r\n")
+		_, _ = io.WriteString(channel, "No SSH keys configured.\r\n")
 		return
 	}
 
 	for i, k := range keys {
-		io.WriteString(channel, fmt.Sprintf("  %d. %s (%s) - %s\r\n", i+1, k.Name, k.KeyType, k.Fingerprint))
+		_, _ = io.WriteString(channel, fmt.Sprintf("  %d. %s (%s) - %s\r\n", i+1, k.Name, k.KeyType, k.Fingerprint))
 	}
 }
 

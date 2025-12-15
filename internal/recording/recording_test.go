@@ -25,7 +25,7 @@ func TestNewRecorderEmptyLocalPath(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: "",
+		LocalPath:   "",
 	}
 
 	_, err := New(cfg)
@@ -39,7 +39,7 @@ func TestNewRecorderValid(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -56,7 +56,7 @@ func TestStartSessionEmptyUsername(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -75,7 +75,7 @@ func TestStartSessionEmptyHostname(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -94,7 +94,7 @@ func TestStartSessionValid(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -124,7 +124,7 @@ func TestSessionRecordOutput(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -159,7 +159,7 @@ func TestSessionRecordInput(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -185,7 +185,7 @@ func TestSessionDoubleClose(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -213,7 +213,7 @@ func TestRecordAfterClose(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -238,7 +238,7 @@ func TestGetSession(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -266,7 +266,7 @@ func TestGetSessionNotFound(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)
@@ -285,7 +285,7 @@ func TestRecordingFileFormat(t *testing.T) {
 	cfg := config.RecordingConfig{
 		Enabled:     true,
 		StorageType: "local",
-		LocalPath: tmpDir,
+		LocalPath:   tmpDir,
 	}
 
 	recorder, err := New(cfg)

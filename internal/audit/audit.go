@@ -94,11 +94,11 @@ func (s *LocalStorage) Write(ctx context.Context, event Event) error {
 	filename := fmt.Sprintf("audit_%s.jsonl", event.Timestamp.Format("20060102"))
 	filePath := filepath.Join(s.basePath, filename)
 
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600) //nolint:gosec // filePath is constructed from basePath
 	if err != nil {
 		return fmt.Errorf("failed to open audit file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -150,7 +150,7 @@ func (s *LocalStorage) Query(ctx context.Context, opts QueryOptions) ([]Event, e
 }
 
 func (s *LocalStorage) readFile(filePath string) ([]Event, error) {
-	data, err := os.ReadFile(filePath)
+	data, err := os.ReadFile(filePath) //nolint:gosec // filePath is constructed from basePath
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +204,7 @@ func (s *LocalStorage) Cleanup(ctx context.Context, before time.Time) error {
 
 		if info.ModTime().Before(before) {
 			filePath := filepath.Join(s.basePath, entry.Name())
-			os.Remove(filePath)
+			_ = os.Remove(filePath)
 		}
 	}
 
@@ -346,7 +346,7 @@ func (a *Auditor) writeLoop() {
 		select {
 		case event := <-a.eventCh:
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			a.storage.Write(ctx, event)
+			_ = a.storage.Write(ctx, event)
 			cancel()
 		case <-a.done:
 			// Drain remaining events.
@@ -354,7 +354,7 @@ func (a *Auditor) writeLoop() {
 				select {
 				case event := <-a.eventCh:
 					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					a.storage.Write(ctx, event)
+					_ = a.storage.Write(ctx, event)
 					cancel()
 				default:
 					return
@@ -391,5 +391,5 @@ func (a *Auditor) runCleanup() {
 	before := time.Now().AddDate(0, 0, -a.cfg.RetentionDays)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	a.storage.Cleanup(ctx, before)
+	_ = a.storage.Cleanup(ctx, before)
 }

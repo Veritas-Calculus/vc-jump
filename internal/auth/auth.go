@@ -36,7 +36,6 @@ type Authenticator struct {
 	cfg   config.AuthConfig
 	store *storage.SQLiteStore
 	cache *authCache
-	mu    sync.RWMutex
 }
 
 type authCache struct {
@@ -175,7 +174,7 @@ func (a *Authenticator) AuthenticatePublicKey(ctx context.Context, username stri
 	dbUser, err := a.store.GetUserByUsername(ctx, username)
 	if err == nil {
 		// User exists - verify the public key matches.
-		if !a.verifyUserPublicKey(dbUser, keyStr, fingerprint) {
+		if !a.verifyUserPublicKey(dbUser, fingerprint) {
 			return nil, errors.New("public key not authorized for this user")
 		}
 
@@ -184,6 +183,7 @@ func (a *Authenticator) AuthenticatePublicKey(ctx context.Context, username stri
 		}
 
 		// Update last login.
+		_ = keyStr // Used when auto-registering key
 		_ = a.store.UpdateUserLastLogin(ctx, dbUser.ID)
 
 		user := &User{
@@ -227,7 +227,7 @@ func (a *Authenticator) AuthenticatePublicKey(ctx context.Context, username stri
 }
 
 // verifyUserPublicKey checks if the provided key matches any of the user's registered keys.
-func (a *Authenticator) verifyUserPublicKey(user *storage.User, keyStr, fingerprint string) bool {
+func (a *Authenticator) verifyUserPublicKey(user *storage.User, fingerprint string) bool {
 	// Check if user has any registered public keys.
 	for _, storedKey := range user.PublicKeys {
 		// Parse stored key to compare.
@@ -252,47 +252,6 @@ func (a *Authenticator) verifyUserPublicKey(user *storage.User, keyStr, fingerpr
 	return false
 }
 
-func (a *Authenticator) verifyStoredPublicKey(ctx context.Context, username string, key ssh.PublicKey) (*User, error) {
-	userWithPwd, err := a.store.GetUserWithPassword(ctx, username)
-	if err != nil {
-		return nil, err
-	}
-
-	if !userWithPwd.IsActive {
-		return nil, errors.New("user account is disabled")
-	}
-
-	// Check if the public key fingerprint matches any stored key.
-	fingerprint := ssh.FingerprintSHA256(key)
-	keyBytes := ssh.MarshalAuthorizedKey(key)
-	keyStr := strings.TrimSpace(string(keyBytes))
-
-	for _, storedKey := range userWithPwd.PublicKeys {
-		storedKey = strings.TrimSpace(storedKey)
-		// Compare full key or fingerprint.
-		if storedKey == keyStr {
-			_ = a.store.UpdateUserLastLogin(ctx, userWithPwd.ID)
-			return &User{
-				ID:       userWithPwd.ID,
-				Username: userWithPwd.Username,
-				Groups:   userWithPwd.Groups,
-			}, nil
-		}
-		// Check fingerprint match.
-		parsedKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(storedKey))
-		if err == nil && ssh.FingerprintSHA256(parsedKey) == fingerprint {
-			_ = a.store.UpdateUserLastLogin(ctx, userWithPwd.ID)
-			return &User{
-				ID:       userWithPwd.ID,
-				Username: userWithPwd.Username,
-				Groups:   userWithPwd.Groups,
-			}, nil
-		}
-	}
-
-	return nil, errors.New("public key not authorized for this user")
-}
-
 func (a *Authenticator) cacheKey(username, password string) string {
 	h := sha256.New()
 	h.Write([]byte(username))
@@ -309,12 +268,14 @@ func (a *Authenticator) cacheKeyPublicKey(username, fingerprint string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (a *Authenticator) authenticateSSO(ctx context.Context, username, password string) (*User, error) {
+func (a *Authenticator) authenticateSSO(_ context.Context, username, password string) (*User, error) {
 	if a.cfg.SSOEndpoint == "" {
 		return nil, errors.New("SSO endpoint not configured")
 	}
 
 	// TODO: Implement actual SSO authentication.
+	_ = username
+	_ = password
 	return nil, errors.New("SSO authentication not implemented")
 }
 
@@ -334,14 +295,6 @@ func (c *authCache) delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.entries, key)
-}
-
-func (c *authCache) save() error {
-	if c.path == "" {
-		return nil
-	}
-	// Simple persistence - could be enhanced.
-	return nil
 }
 
 // HashPassword creates a bcrypt hash of the password.

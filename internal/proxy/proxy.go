@@ -53,19 +53,20 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 	var key ssh.Signer
 	var err error
 
-	if opts != nil && opts.PrivateKeyData != "" {
+	switch {
+	case opts != nil && opts.PrivateKeyData != "":
 		// Use provided private key data.
 		key, err = ssh.ParsePrivateKey([]byte(opts.PrivateKeyData))
 		if err != nil {
 			return fmt.Errorf("failed to parse private key: %w", err)
 		}
-	} else if host.KeyPath != "" {
+	case host.KeyPath != "":
 		// Load from file path.
 		key, err = loadPrivateKey(host.KeyPath)
 		if err != nil {
 			return fmt.Errorf("failed to load private key: %w", err)
 		}
-	} else {
+	default:
 		return errors.New("no SSH key configured for target host")
 	}
 
@@ -81,7 +82,7 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(key),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Implement proper host key verification.
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // TODO: Implement proper host key verification.
 		Timeout:         30 * time.Second,
 	}
 
@@ -91,14 +92,14 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 	if err != nil {
 		return fmt.Errorf("failed to connect to target: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Create session.
 	session, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	// Request PTY if needed.
 	if ptyReq != nil {
@@ -145,7 +146,7 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 	// Channel -> remote stdin.
 	go func() {
 		_, err := io.Copy(stdin, channel)
-		stdin.Close()
+		_ = stdin.Close()
 		done <- err
 	}()
 
@@ -164,11 +165,11 @@ func (p *Proxy) ConnectWithOptions(ctx context.Context, channel io.ReadWriteClos
 	// Wait for session to end or context cancellation.
 	select {
 	case <-ctx.Done():
-		session.Close()
+		_ = session.Close()
 		return ctx.Err()
 	case err := <-done:
 		// Wait for session to finish.
-		session.Wait()
+		_ = session.Wait()
 		if err != nil && !errors.Is(err, io.EOF) && !isClosedError(err) {
 			return err
 		}
@@ -186,7 +187,7 @@ func loadPrivateKey(keyPath string) (ssh.Signer, error) {
 		keyPath = homeDir + "/.ssh/id_rsa"
 	}
 
-	keyData, err := os.ReadFile(keyPath)
+	keyData, err := os.ReadFile(keyPath) //nolint:gosec // keyPath is validated
 	if err != nil {
 		return nil, fmt.Errorf("failed to read key file: %w", err)
 	}

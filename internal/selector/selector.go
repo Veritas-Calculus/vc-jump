@@ -125,14 +125,14 @@ func (s *Selector) SelectHostWithAdmin(rw io.ReadWriter, hosts []config.HostConf
 	}
 
 	// Display menu.
-	io.WriteString(rw, "\r\n=== VC Jump - Host Selection ===\r\n\r\n")
+	_, _ = io.WriteString(rw, "\r\n=== VC Jump - Host Selection ===\r\n\r\n")
 	for i, host := range hosts {
-		fmt.Fprintf(rw, "  [%d] %s (%s:%d)\r\n", i+1, host.Name, host.Addr, host.Port)
+		_, _ = fmt.Fprintf(rw, "  [%d] %s (%s:%d)\r\n", i+1, host.Name, host.Addr, host.Port)
 	}
 	if isAdmin {
-		io.WriteString(rw, "\r\n  [A] Admin Console\r\n")
+		_, _ = io.WriteString(rw, "\r\n  [A] Admin Console\r\n")
 	}
-	io.WriteString(rw, "\r\nSelect host (number): ")
+	_, _ = io.WriteString(rw, "\r\nSelect host (number): ")
 
 	// Read selection.
 	selection, err := readLine(rw)

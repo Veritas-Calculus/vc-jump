@@ -92,10 +92,10 @@ func New(cfg config.LoggingConfig) (*Logger, error) {
 		if cfg.FilePath == "" {
 			return nil, fmt.Errorf("file_path is required when output is 'file'")
 		}
-		if err := os.MkdirAll(filepath.Dir(cfg.FilePath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(cfg.FilePath), 0750); err != nil {
 			return nil, fmt.Errorf("failed to create log directory: %w", err)
 		}
-		file, err := os.OpenFile(cfg.FilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		file, err := os.OpenFile(cfg.FilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600) //nolint:gosec
 		if err != nil {
 			return nil, fmt.Errorf("failed to open log file: %w", err)
 		}
@@ -202,15 +202,15 @@ func (l *Logger) log(level Level, msg string) {
 
 	if l.cfg.Format == "json" {
 		data, _ := json.Marshal(entry)
-		l.output.Write(data)
-		l.output.Write([]byte("\n"))
+		_, _ = l.output.Write(data)
+		_, _ = l.output.Write([]byte("\n"))
 	} else {
 		// Text format.
 		fieldsStr := ""
 		for k, v := range l.fields {
 			fieldsStr += fmt.Sprintf(" %s=%v", k, v)
 		}
-		fmt.Fprintf(l.output, "%s [%s] %s%s\n",
+		_, _ = fmt.Fprintf(l.output, "%s [%s] %s%s\n",
 			entry.Time.Format("2006-01-02 15:04:05"),
 			entry.Level,
 			entry.Message,
@@ -256,7 +256,7 @@ func (l *Logger) cleanup() {
 			continue
 		}
 		if info.ModTime().Before(cutoff) {
-			os.Remove(file)
+			_ = os.Remove(file)
 		}
 	}
 }
@@ -318,7 +318,7 @@ func (l *Logger) RotateLog() error {
 	defer l.mu.Unlock()
 
 	// Close current file.
-	l.file.Close()
+	_ = l.file.Close()
 
 	// Rename current file with timestamp.
 	timestamp := time.Now().Format("20060102_150405")
@@ -328,7 +328,7 @@ func (l *Logger) RotateLog() error {
 	}
 
 	// Open new file.
-	file, err := os.OpenFile(l.cfg.FilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(l.cfg.FilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600) //nolint:gosec
 	if err != nil {
 		return err
 	}
@@ -367,6 +367,6 @@ func (l *Logger) removeOldBackups() {
 
 	// Remove oldest files.
 	for i := 0; i < len(files)-l.cfg.MaxBackups; i++ {
-		os.Remove(files[i])
+		_ = os.Remove(files[i])
 	}
 }

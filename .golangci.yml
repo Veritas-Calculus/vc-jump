@@ -13,15 +13,17 @@ linters:
     - unused
     - gosec
     - gocritic
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - unparam
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
+formatters:
+  enable:
+    - gofmt
+    - goimports

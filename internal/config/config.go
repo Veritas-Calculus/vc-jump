@@ -169,7 +169,7 @@ func Load(path string) (*Config, error) {
 
 	cfg := DefaultConfig()
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is from command line flag
 	if err != nil {
 		if os.IsNotExist(err) {
 			return cfg, nil

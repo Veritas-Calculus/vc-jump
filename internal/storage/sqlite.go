@@ -41,13 +41,13 @@ func NewSQLiteStore(cfg config.StorageConfig) (*SQLiteStore, error) {
 
 	// Enable WAL mode for better concurrency.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable WAL mode: %w", err)
 	}
 
 	// Enable foreign keys.
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
 
@@ -55,7 +55,7 @@ func NewSQLiteStore(cfg config.StorageConfig) (*SQLiteStore, error) {
 
 	// Initialize schema.
 	if err := store.initSchema(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
@@ -164,10 +164,10 @@ func (s *SQLiteStore) initSchema() error {
 func (s *SQLiteStore) runMigrations() error {
 	// Add 'user' column to hosts if it doesn't exist.
 	_, err := s.db.Exec("ALTER TABLE hosts ADD COLUMN user TEXT DEFAULT 'root'")
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+	if err != nil {
 		// Ignore error if column already exists.
-		if !strings.Contains(err.Error(), "duplicate column") {
-			// Some sqlite implementations use different error messages.
+		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
+			return err
 		}
 	}
 	return nil
@@ -262,7 +262,7 @@ func (s *SQLiteStore) ListHosts(ctx context.Context) ([]Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list hosts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var hosts []Host
 	for rows.Next() {
@@ -482,7 +482,7 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list users: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var users []User
 	for rows.Next() {
@@ -693,7 +693,7 @@ func (s *SQLiteStore) ListSessions(ctx context.Context, username string, limit i
 	if err != nil {
 		return nil, fmt.Errorf("failed to list sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []Session
 	for rows.Next() {
@@ -785,7 +785,7 @@ func (s *SQLiteStore) ListActiveSessions(ctx context.Context) ([]Session, error)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list active sessions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sessions []Session
 	for rows.Next() {
@@ -917,7 +917,7 @@ func (s *SQLiteStore) ListSSHKeys(ctx context.Context) ([]SSHKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ssh keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var keys []SSHKey
 	for rows.Next() {

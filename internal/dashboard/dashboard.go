@@ -642,13 +642,13 @@ func (s *Server) handleRecording(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		// Return recording content.
-		data, err := os.ReadFile(filePath)
+		data, err := os.ReadFile(filePath) //nolint:gosec // filePath constructed from validated filename
 		if err != nil {
 			s.jsonError(w, "recording not found", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(data)
+		_, _ = w.Write(data)
 
 	case http.MethodDelete:
 		if err := os.Remove(filePath); err != nil {
@@ -666,11 +666,11 @@ func (s *Server) handleRecording(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) jsonResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func (s *Server) jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }

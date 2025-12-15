@@ -620,7 +620,7 @@ func TestSQLiteStore_UserNullAllowedHosts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get user: %v", err)
 	}
-	if retrieved.AllowedHosts != nil && len(retrieved.AllowedHosts) > 0 {
+	if len(retrieved.AllowedHosts) > 0 {
 		t.Errorf("expected nil/empty allowed hosts, got %v", retrieved.AllowedHosts)
 	}
 
