@@ -2,7 +2,10 @@
 
 [![CI](https://github.com/Veritas-Calculus/vc-jump/actions/workflows/ci.yml/badge.svg)](https://github.com/Veritas-Calculus/vc-jump/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Veritas-Calculus/vc-jump)](https://goreportcard.com/report/github.com/Veritas-Calculus/vc-jump)
+[![Security Scan](https://github.com/Veritas-Calculus/vc-jump/actions/workflows/security.yml/badge.svg)](https://github.com/Veritas-Calculus/vc-jump/actions/workflows/security.yml)
+[![CodeQL](https://github.com/Veritas-Calculus/vc-jump/actions/workflows/codeql.yml/badge.svg)](https://github.com/Veritas-Calculus/vc-jump/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Veritas-Calculus/vc-jump)](https://go.dev/)
 
 轻量级 SSH 堡垒机（Bastion Host），使用 Go 语言编写。
 
