@@ -498,9 +498,11 @@
                 // Load all sessions (history)
                 const sessions = await (await fetch('/api/sessions', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
                 const historySessions = sessions.filter(s => s.end_time);
-                document.getElementById('sessions-table').innerHTML = historySessions.length ? historySessions.map(s => 
-                    `<tr><td>${s.username}</td><td>${s.source_ip}</td><td>${s.target_host}</td><td>${new Date(s.start_time).toLocaleString()}</td><td>${new Date(s.end_time).toLocaleString()}</td><td>${s.recording ? `<button class="btn-sm" onclick="playRecording('${s.recording}')">Play</button>` : '-'}</td></tr>`
-                ).join('') : '<tr><td colspan="6" style="text-align:center;color:#888">No session history</td></tr>';
+                document.getElementById('sessions-table').innerHTML = historySessions.length ? historySessions.map(s => {
+                    // Extract filename from recording path (may contain directory prefix).
+                    const recordingFile = s.recording ? s.recording.split('/').pop() : null;
+                    return `<tr><td>${escapeHtml(s.username)}</td><td>${escapeHtml(s.source_ip)}</td><td>${escapeHtml(s.target_host)}</td><td>${new Date(s.start_time).toLocaleString()}</td><td>${new Date(s.end_time).toLocaleString()}</td><td>${recordingFile ? `<button class="btn-sm" onclick="playRecording('${escapeJs(recordingFile)}')">Play</button>` : '-'}</td></tr>`;
+                }).join('') : '<tr><td colspan="6" style="text-align:center;color:#888">No session history</td></tr>';
             } catch (e) { console.error(e); }
         }
 
