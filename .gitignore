@@ -1,6 +1,6 @@
 # Build output
-vc-jump
-vc-jump-*
+/vc-jump
+/vc-jump-*
 *.exe
 dist/
 
