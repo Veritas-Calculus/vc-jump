@@ -65,6 +65,29 @@ type Session struct {
 	Recording  string    `json:"recording,omitempty"`
 }
 
+// Role represents a role with associated permissions.
+type Role struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	DisplayName string    `json:"display_name"`
+	Description string    `json:"description"`
+	Permissions []string  `json:"permissions"`
+	IsSystem    bool      `json:"is_system"` // System roles cannot be deleted.
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// HostPermission represents a user's permission to access a specific host.
+type HostPermission struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	HostID    string    `json:"host_id"`
+	CanSudo   bool      `json:"can_sudo"`   // Can execute sudo commands.
+	ExpiresAt time.Time `json:"expires_at"` // Zero means no expiration.
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Store defines the interface for data persistence.
 type Store interface {
 	// Host operations.

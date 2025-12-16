@@ -74,6 +74,7 @@
         .section { display: none; }
         .section.active { display: block; }
         .active-badge { color: #090; }
+        .iam-tab { margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -109,6 +110,7 @@
                     <li><a href="#keys" data-section="keys">SSH Keys</a></li>
                     <li><a href="#sessions" data-section="sessions">Sessions</a></li>
                     <li><a href="#recordings" data-section="recordings">Recordings</a></li>
+                    <li><a href="#iam" data-section="iam">IAM</a></li>
                 </ul>
             </div>
             <div class="content">
@@ -185,6 +187,39 @@
                         <thead><tr><th style="width:30px"><input type="checkbox" id="selectAllHeader" onchange="toggleSelectAll(this.checked)"></th><th>Filename</th><th>Size</th><th>Date</th><th>Action</th></tr></thead>
                         <tbody id="recordings-table"></tbody>
                     </table>
+                </div>
+
+                <div class="section" id="section-iam">
+                    <h2>Identity & Access Management</h2>
+                    <div style="display:flex;gap:10px;margin-bottom:15px">
+                        <button class="btn-sm" id="iamTabRoles" onclick="showIamTab('roles')" style="background:#333;color:#fff">Roles</button>
+                        <button class="btn-sm" id="iamTabUserRoles" onclick="showIamTab('user-roles')">User Roles</button>
+                        <button class="btn-sm" id="iamTabHostPerms" onclick="showIamTab('host-perms')">Host Permissions</button>
+                    </div>
+
+                    <div id="iam-roles" class="iam-tab">
+                        <button class="btn-sm btn-add" onclick="showModal('addRoleModal')">+ Add Role</button>
+                        <table style="margin-top:10px">
+                            <thead><tr><th>Name</th><th>Display Name</th><th>Description</th><th>Permissions</th><th>System</th><th>Action</th></tr></thead>
+                            <tbody id="roles-table"></tbody>
+                        </table>
+                    </div>
+
+                    <div id="iam-user-roles" class="iam-tab" style="display:none">
+                        <button class="btn-sm btn-add" onclick="showModal('assignRoleModal')">+ Assign Role</button>
+                        <table style="margin-top:10px">
+                            <thead><tr><th>User</th><th>Roles</th><th>Action</th></tr></thead>
+                            <tbody id="user-roles-table"></tbody>
+                        </table>
+                    </div>
+
+                    <div id="iam-host-perms" class="iam-tab" style="display:none">
+                        <button class="btn-sm btn-add" onclick="showModal('grantHostModal')">+ Grant Access</button>
+                        <table style="margin-top:10px">
+                            <thead><tr><th>User</th><th>Host</th><th>Actions</th><th>Granted By</th><th>Expires</th><th>Action</th></tr></thead>
+                            <tbody id="host-perms-table"></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
@@ -303,6 +338,81 @@
         </div>
     </div>
 
+    <!-- Add Role Modal -->
+    <div class="modal" id="addRoleModal">
+        <div class="modal-content" style="width:450px">
+            <h3 id="roleModalTitle">Add Role</h3>
+            <form id="addRoleForm">
+                <input type="hidden" name="id" id="roleEditId">
+                <div class="form-group"><label>Name (unique key)</label><input type="text" name="name" id="roleName" required pattern="[a-z0-9_-]+" title="lowercase letters, numbers, hyphens, underscores"></div>
+                <div class="form-group"><label>Display Name</label><input type="text" name="display_name" id="roleDisplayName" required></div>
+                <div class="form-group"><label>Description</label><input type="text" name="description" id="roleDescription"></div>
+                <div class="form-group">
+                    <label>Permissions</label>
+                    <div id="permissionCheckboxes" style="max-height:200px;overflow-y:auto;border:1px solid #ccc;padding:8px;font-size:11px"></div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-sm" onclick="closeModal('addRoleModal')">Cancel</button>
+                    <button type="submit" class="btn-sm btn-add" id="roleSubmitBtn">Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Assign Role Modal -->
+    <div class="modal" id="assignRoleModal">
+        <div class="modal-content">
+            <h3>Assign Role to User</h3>
+            <form id="assignRoleForm">
+                <div class="form-group">
+                    <label>User</label>
+                    <select name="user_id" id="assignRoleUserId" required></select>
+                </div>
+                <div class="form-group">
+                    <label>Role</label>
+                    <select name="role_id" id="assignRoleRoleId" required></select>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-sm" onclick="closeModal('assignRoleModal')">Cancel</button>
+                    <button type="submit" class="btn-sm btn-add">Assign</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Grant Host Access Modal -->
+    <div class="modal" id="grantHostModal">
+        <div class="modal-content">
+            <h3>Grant Host Access</h3>
+            <form id="grantHostForm">
+                <div class="form-group">
+                    <label>User</label>
+                    <select name="user_id" id="grantHostUserId" required></select>
+                </div>
+                <div class="form-group">
+                    <label>Host</label>
+                    <select name="host_id" id="grantHostHostId" required></select>
+                </div>
+                <div class="form-group">
+                    <label>Actions</label>
+                    <div id="hostActionCheckboxes" style="font-size:12px">
+                        <label style="margin-right:10px"><input type="checkbox" name="actions" value="connect" checked> Connect</label>
+                        <label style="margin-right:10px"><input type="checkbox" name="actions" value="view"> View</label>
+                        <label style="margin-right:10px"><input type="checkbox" name="actions" value="sudo"> Sudo</label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Expires At (optional)</label>
+                    <input type="datetime-local" name="expires_at" id="grantHostExpires">
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-sm" onclick="closeModal('grantHostModal')">Cancel</button>
+                    <button type="submit" class="btn-sm btn-add">Grant</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         let token = localStorage.getItem('token');
         let currentUser = null;
@@ -367,7 +477,7 @@
         // ============================================================
         // Hash-based Routing
         // ============================================================
-        const validSections = ['overview', 'hosts', 'users', 'keys', 'sessions', 'recordings'];
+        const validSections = ['overview', 'hosts', 'users', 'keys', 'sessions', 'recordings', 'iam'];
         
         function initRouter() {
             // Listen for hash changes
@@ -417,6 +527,7 @@
             else if (s === 'keys') loadKeys();
             else if (s === 'sessions') loadSessions();
             else if (s === 'recordings') loadRecordings();
+            else if (s === 'iam') loadIam();
         }
 
         async function loadStats() {
@@ -1206,6 +1317,263 @@
         async function deleteUser(id) { if (confirm('Delete user?')) { await fetch('/api/users/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } }); loadUsers(); } }
         async function deleteKey(id) { if (confirm('Delete key?')) { await fetch('/api/keys/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } }); loadKeys(); } }
         function copyKey(b64) { navigator.clipboard.writeText(atob(b64)); alert('Public key copied!'); }
+
+        // ============================================================
+        // IAM (Identity & Access Management)
+        // ============================================================
+        let allRoles = [];
+        let allPermissions = [];
+        let allUsersForIam = [];
+
+        function showIamTab(tab) {
+            document.querySelectorAll('.iam-tab').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('[id^="iamTab"]').forEach(btn => { btn.style.background = '#fff'; btn.style.color = '#333'; });
+            
+            if (tab === 'roles') {
+                document.getElementById('iam-roles').style.display = 'block';
+                document.getElementById('iamTabRoles').style.background = '#333';
+                document.getElementById('iamTabRoles').style.color = '#fff';
+            } else if (tab === 'user-roles') {
+                document.getElementById('iam-user-roles').style.display = 'block';
+                document.getElementById('iamTabUserRoles').style.background = '#333';
+                document.getElementById('iamTabUserRoles').style.color = '#fff';
+                loadUserRoles();
+            } else if (tab === 'host-perms') {
+                document.getElementById('iam-host-perms').style.display = 'block';
+                document.getElementById('iamTabHostPerms').style.background = '#333';
+                document.getElementById('iamTabHostPerms').style.color = '#fff';
+                loadHostPerms();
+            }
+        }
+
+        async function loadIam() {
+            await Promise.all([loadRoles(), loadPermissions(), loadUsersForIam()]);
+        }
+
+        async function loadPermissions() {
+            try {
+                allPermissions = await (await fetch('/api/iam/permissions', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+            } catch (e) { allPermissions = []; }
+        }
+
+        async function loadUsersForIam() {
+            try {
+                allUsersForIam = await (await fetch('/api/users', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+            } catch (e) { allUsersForIam = []; }
+        }
+
+        async function loadRoles() {
+            try {
+                allRoles = await (await fetch('/api/iam/roles', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                document.getElementById('roles-table').innerHTML = allRoles.length ? allRoles.map(r => 
+                    `<tr>
+                        <td><code>${escapeHtml(r.name)}</code></td>
+                        <td>${escapeHtml(r.display_name)}</td>
+                        <td>${escapeHtml(r.description || '-')}</td>
+                        <td style="font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${(r.permissions||[]).join(', ') || '-'}</td>
+                        <td>${r.is_system ? '<span style="color:#090">✓</span>' : '-'}</td>
+                        <td>${r.is_system ? '-' : `<button class="btn-sm" onclick="editRole('${r.id}')">Edit</button> <button class="btn-sm btn-del" onclick="deleteRole('${r.id}')">Del</button>`}</td>
+                    </tr>`
+                ).join('') : '<tr><td colspan="6" style="text-align:center;color:#888">No roles defined</td></tr>';
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadUserRoles() {
+            try {
+                const userRolesMap = {};
+                for (const u of allUsersForIam) {
+                    const roles = await (await fetch('/api/iam/user-roles/' + u.id, { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                    userRolesMap[u.id] = { user: u, roles: roles };
+                }
+                document.getElementById('user-roles-table').innerHTML = Object.keys(userRolesMap).length ? 
+                    Object.values(userRolesMap).map(item => {
+                        const roleNames = item.roles.map(r => r.display_name || r.name).join(', ') || '<span style="color:#888">No roles</span>';
+                        const roleBadges = item.roles.map(r => `<button class="btn-sm btn-del" style="font-size:9px;padding:1px 4px" onclick="removeUserRole('${item.user.id}','${r.id}')">${escapeHtml(r.name)} ✕</button>`).join(' ');
+                        return `<tr><td>${escapeHtml(item.user.username)}</td><td>${roleNames}</td><td>${roleBadges || '-'}</td></tr>`;
+                    }).join('') : '<tr><td colspan="3" style="text-align:center;color:#888">No users</td></tr>';
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadHostPerms() {
+            try {
+                const perms = await (await fetch('/api/iam/host-permissions', { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                document.getElementById('host-perms-table').innerHTML = perms.length ? perms.map(p => {
+                    const userName = allUsersForIam.find(u => u.id === p.user_id)?.username || p.user_id.slice(0,8);
+                    const hostName = allHosts.find(h => h.id === p.host_id)?.name || p.host_id.slice(0,8);
+                    const expires = p.expires_at ? new Date(p.expires_at).toLocaleString() : 'Never';
+                    return `<tr>
+                        <td>${escapeHtml(userName)}</td>
+                        <td>${escapeHtml(hostName)}</td>
+                        <td><code style="font-size:10px">${(p.actions||[]).join(', ')}</code></td>
+                        <td>${p.granted_by ? p.granted_by.slice(0,8) : '-'}</td>
+                        <td>${expires}</td>
+                        <td><button class="btn-sm btn-del" onclick="revokeHostPerm('${p.id}')">Revoke</button></td>
+                    </tr>`;
+                }).join('') : '<tr><td colspan="6" style="text-align:center;color:#888">No host permissions</td></tr>';
+            } catch (e) { console.error(e); }
+        }
+
+        function populatePermissionCheckboxes(selectedPerms) {
+            const container = document.getElementById('permissionCheckboxes');
+            const perms = selectedPerms || [];
+            const groups = {};
+            allPermissions.forEach(p => {
+                const [cat] = p.name.split(':');
+                if (!groups[cat]) groups[cat] = [];
+                groups[cat].push(p);
+            });
+            let html = '';
+            Object.keys(groups).sort().forEach(cat => {
+                html += `<div style="margin-bottom:8px"><strong>${cat}</strong><br>`;
+                groups[cat].forEach(p => {
+                    const checked = perms.includes(p.name) ? 'checked' : '';
+                    html += `<label style="margin-right:8px"><input type="checkbox" name="permissions" value="${p.name}" ${checked}> ${p.name.split(':')[1]}</label>`;
+                });
+                html += '</div>';
+            });
+            container.innerHTML = html || 'No permissions available';
+        }
+
+        function resetRoleForm() {
+            document.getElementById('roleModalTitle').textContent = 'Add Role';
+            document.getElementById('roleSubmitBtn').textContent = 'Add';
+            document.getElementById('roleEditId').value = '';
+            document.getElementById('roleName').value = '';
+            document.getElementById('roleName').removeAttribute('readonly');
+            document.getElementById('roleDisplayName').value = '';
+            document.getElementById('roleDescription').value = '';
+            populatePermissionCheckboxes([]);
+        }
+
+        function editRole(id) {
+            const r = allRoles.find(r => r.id === id);
+            if (!r || r.is_system) return;
+            document.getElementById('roleModalTitle').textContent = 'Edit Role';
+            document.getElementById('roleSubmitBtn').textContent = 'Save';
+            document.getElementById('roleEditId').value = r.id;
+            document.getElementById('roleName').value = r.name;
+            document.getElementById('roleName').setAttribute('readonly', true);
+            document.getElementById('roleDisplayName').value = r.display_name;
+            document.getElementById('roleDescription').value = r.description || '';
+            populatePermissionCheckboxes(r.permissions || []);
+            showModal('addRoleModal');
+        }
+
+        document.getElementById('addRoleForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const f = e.target;
+            const id = document.getElementById('roleEditId').value;
+            const perms = Array.from(f.querySelectorAll('input[name="permissions"]:checked')).map(cb => cb.value);
+            const data = {
+                name: f.name.value,
+                display_name: f.display_name.value,
+                description: f.description.value,
+                permissions: perms
+            };
+            if (id) {
+                await fetch('/api/iam/roles/' + id, {
+                    method: 'PUT',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+            } else {
+                await fetch('/api/iam/roles', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+            }
+            closeModal('addRoleModal'); resetRoleForm(); loadRoles();
+        };
+
+        async function deleteRole(id) {
+            if (confirm('Delete this role?')) {
+                await fetch('/api/iam/roles/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+                loadRoles();
+            }
+        }
+
+        function populateUserDropdown(selectId) {
+            const sel = document.getElementById(selectId);
+            sel.innerHTML = '<option value="">-- Select User --</option>' + allUsersForIam.map(u => 
+                `<option value="${u.id}">${escapeHtml(u.username)}</option>`
+            ).join('');
+        }
+
+        function populateRoleDropdown(selectId) {
+            const sel = document.getElementById(selectId);
+            sel.innerHTML = '<option value="">-- Select Role --</option>' + allRoles.map(r => 
+                `<option value="${r.id}">${escapeHtml(r.display_name)} (${r.name})</option>`
+            ).join('');
+        }
+
+        function populateHostDropdown(selectId) {
+            const sel = document.getElementById(selectId);
+            sel.innerHTML = '<option value="">-- Select Host --</option>' + allHosts.map(h => 
+                `<option value="${h.id}">${escapeHtml(h.name)} (${h.addr})</option>`
+            ).join('');
+        }
+
+        document.getElementById('assignRoleForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const f = e.target;
+            await fetch('/api/iam/user-roles/' + f.user_id.value, {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ role_id: f.role_id.value })
+            });
+            closeModal('assignRoleModal'); loadUserRoles();
+        };
+
+        async function removeUserRole(userId, roleId) {
+            if (confirm('Remove this role from user?')) {
+                await fetch('/api/iam/user-roles/' + userId + '?role_id=' + roleId, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+                loadUserRoles();
+            }
+        }
+
+        document.getElementById('grantHostForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const f = e.target;
+            const actions = Array.from(f.querySelectorAll('input[name="actions"]:checked')).map(cb => cb.value);
+            const data = {
+                user_id: f.user_id.value,
+                host_id: f.host_id.value,
+                actions: actions,
+                expires_at: f.expires_at.value ? new Date(f.expires_at.value).toISOString() : null
+            };
+            await fetch('/api/iam/host-permissions', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            closeModal('grantHostModal'); loadHostPerms();
+        };
+
+        async function revokeHostPerm(id) {
+            if (confirm('Revoke this host permission?')) {
+                await fetch('/api/iam/host-permissions/' + id, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + token } });
+                loadHostPerms();
+            }
+        }
+
+        // Override showModal for IAM modals
+        const originalShowModal = showModal;
+        showModal = function(id) {
+            if (id === 'addRoleModal') {
+                if (!document.getElementById('roleEditId').value) {
+                    resetRoleForm();
+                }
+            } else if (id === 'assignRoleModal') {
+                populateUserDropdown('assignRoleUserId');
+                populateRoleDropdown('assignRoleRoleId');
+            } else if (id === 'grantHostModal') {
+                populateUserDropdown('grantHostUserId');
+                populateHostDropdown('grantHostHostId');
+                document.getElementById('grantHostExpires').value = '';
+            }
+            originalShowModal(id);
+        };
     </script>
 </body>
 </html>

@@ -134,6 +134,20 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/recordings", s.requireAuth(s.handleRecordings))
 	s.mux.HandleFunc("/api/recordings/", s.requireAuth(s.handleRecording))
 
+	// IAM - Role management.
+	s.mux.HandleFunc("/api/iam/roles", s.requireAuth(s.handleRoles))
+	s.mux.HandleFunc("/api/iam/roles/", s.requireAuth(s.handleRole))
+
+	// IAM - User role assignments.
+	s.mux.HandleFunc("/api/iam/user-roles/", s.requireAuth(s.handleUserRoles))
+
+	// IAM - Host permissions.
+	s.mux.HandleFunc("/api/iam/host-permissions", s.requireAuth(s.handleHostPermissions))
+	s.mux.HandleFunc("/api/iam/host-permissions/", s.requireAuth(s.handleHostPermission))
+
+	// IAM - Permissions list.
+	s.mux.HandleFunc("/api/iam/permissions", s.requireAuth(s.handlePermissionsList))
+
 	// Dashboard stats.
 	s.mux.HandleFunc("/api/stats", s.requireAuth(s.handleStats))
 

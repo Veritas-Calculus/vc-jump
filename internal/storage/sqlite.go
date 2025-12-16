@@ -150,6 +150,47 @@ func (s *SQLiteStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_user_public_keys_user_id ON user_public_keys(user_id);
 	CREATE INDEX IF NOT EXISTS idx_tokens_user_id ON tokens(user_id);
 	CREATE INDEX IF NOT EXISTS idx_tokens_expires_at ON tokens(expires_at);
+
+	-- RBAC tables
+	CREATE TABLE IF NOT EXISTS roles (
+		id TEXT PRIMARY KEY,
+		name TEXT UNIQUE NOT NULL,
+		display_name TEXT NOT NULL,
+		description TEXT,
+		permissions TEXT DEFAULT '[]',
+		is_system INTEGER DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS user_roles (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		role_id TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+		FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE CASCADE,
+		UNIQUE(user_id, role_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS host_permissions (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		host_id TEXT NOT NULL,
+		can_sudo INTEGER DEFAULT 0,
+		expires_at DATETIME,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+		FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE,
+		UNIQUE(user_id, host_id)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_roles_name ON roles(name);
+	CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);
+	CREATE INDEX IF NOT EXISTS idx_user_roles_role_id ON user_roles(role_id);
+	CREATE INDEX IF NOT EXISTS idx_host_permissions_user_id ON host_permissions(user_id);
+	CREATE INDEX IF NOT EXISTS idx_host_permissions_host_id ON host_permissions(host_id);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -1264,3 +1305,514 @@ func (s *SQLiteStore) SetSetting(ctx context.Context, key, value string) error {
 func (s *SQLiteStore) DB() *sql.DB {
 	return s.db
 }
+
+// RBAC Role operations.
+
+// GetRole retrieves a role by ID.
+func (s *SQLiteStore) GetRole(ctx context.Context, id string) (*Role, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var role Role
+	var permissionsJSON string
+	var description sql.NullString
+
+	err := s.db.QueryRowContext(ctx,
+		"SELECT id, name, display_name, description, permissions, is_system, created_at, updated_at FROM roles WHERE id = ?",
+		id,
+	).Scan(&role.ID, &role.Name, &role.DisplayName, &description, &permissionsJSON, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, errors.New("role not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get role: %w", err)
+	}
+
+	if description.Valid {
+		role.Description = description.String
+	}
+	if err := json.Unmarshal([]byte(permissionsJSON), &role.Permissions); err != nil {
+		role.Permissions = []string{}
+	}
+
+	return &role, nil
+}
+
+// GetRoleByName retrieves a role by name.
+func (s *SQLiteStore) GetRoleByName(ctx context.Context, name string) (*Role, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var role Role
+	var permissionsJSON string
+	var description sql.NullString
+
+	err := s.db.QueryRowContext(ctx,
+		"SELECT id, name, display_name, description, permissions, is_system, created_at, updated_at FROM roles WHERE name = ?",
+		name,
+	).Scan(&role.ID, &role.Name, &role.DisplayName, &description, &permissionsJSON, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, errors.New("role not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get role: %w", err)
+	}
+
+	if description.Valid {
+		role.Description = description.String
+	}
+	if err := json.Unmarshal([]byte(permissionsJSON), &role.Permissions); err != nil {
+		role.Permissions = []string{}
+	}
+
+	return &role, nil
+}
+
+// ListRoles lists all roles.
+func (s *SQLiteStore) ListRoles(ctx context.Context) ([]Role, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, name, display_name, description, permissions, is_system, created_at, updated_at FROM roles ORDER BY name",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list roles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var roles []Role
+	for rows.Next() {
+		var role Role
+		var permissionsJSON string
+		var description sql.NullString
+
+		if err := rows.Scan(&role.ID, &role.Name, &role.DisplayName, &description, &permissionsJSON, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan role: %w", err)
+		}
+
+		if description.Valid {
+			role.Description = description.String
+		}
+		if err := json.Unmarshal([]byte(permissionsJSON), &role.Permissions); err != nil {
+			role.Permissions = []string{}
+		}
+		roles = append(roles, role)
+	}
+
+	return roles, rows.Err()
+}
+
+// CreateRole creates a new role.
+func (s *SQLiteStore) CreateRole(ctx context.Context, role *Role) error {
+	if role.Name == "" {
+		return errors.New("role name is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if role.ID == "" {
+		role.ID = generateID()
+	}
+	role.CreatedAt = time.Now()
+	role.UpdatedAt = role.CreatedAt
+
+	permissionsJSON, err := json.Marshal(role.Permissions)
+	if err != nil {
+		return fmt.Errorf("failed to marshal permissions: %w", err)
+	}
+
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO roles (id, name, display_name, description, permissions, is_system, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		role.ID, role.Name, role.DisplayName, role.Description, string(permissionsJSON), role.IsSystem, role.CreatedAt, role.UpdatedAt,
+	)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return errors.New("role with this name already exists")
+		}
+		return fmt.Errorf("failed to create role: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateRole updates an existing role.
+func (s *SQLiteStore) UpdateRole(ctx context.Context, role *Role) error {
+	if role.ID == "" {
+		return errors.New("role ID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	role.UpdatedAt = time.Now()
+
+	permissionsJSON, err := json.Marshal(role.Permissions)
+	if err != nil {
+		return fmt.Errorf("failed to marshal permissions: %w", err)
+	}
+
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE roles SET name = ?, display_name = ?, description = ?, permissions = ?, updated_at = ? WHERE id = ?`,
+		role.Name, role.DisplayName, role.Description, string(permissionsJSON), role.UpdatedAt, role.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update role: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return errors.New("role not found")
+	}
+
+	return nil
+}
+
+// DeleteRole deletes a role by ID.
+func (s *SQLiteStore) DeleteRole(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Check if it's a system role.
+	var isSystem bool
+	err := s.db.QueryRowContext(ctx, "SELECT is_system FROM roles WHERE id = ?", id).Scan(&isSystem)
+	if err == sql.ErrNoRows {
+		return errors.New("role not found")
+	}
+	if err != nil {
+		return fmt.Errorf("failed to check role: %w", err)
+	}
+	if isSystem {
+		return errors.New("cannot delete system role")
+	}
+
+	_, err = s.db.ExecContext(ctx, "DELETE FROM roles WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete role: %w", err)
+	}
+
+	return nil
+}
+
+// User-Role operations.
+
+// GetUserRoles returns all roles assigned to a user.
+func (s *SQLiteStore) GetUserRoles(ctx context.Context, userID string) ([]Role, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT r.id, r.name, r.display_name, r.description, r.permissions, r.is_system, r.created_at, r.updated_at
+		 FROM roles r
+		 INNER JOIN user_roles ur ON r.id = ur.role_id
+		 WHERE ur.user_id = ?
+		 ORDER BY r.name`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user roles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var roles []Role
+	for rows.Next() {
+		var role Role
+		var permissionsJSON string
+		var description sql.NullString
+
+		if err := rows.Scan(&role.ID, &role.Name, &role.DisplayName, &description, &permissionsJSON, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan role: %w", err)
+		}
+
+		if description.Valid {
+			role.Description = description.String
+		}
+		if err := json.Unmarshal([]byte(permissionsJSON), &role.Permissions); err != nil {
+			role.Permissions = []string{}
+		}
+		roles = append(roles, role)
+	}
+
+	return roles, rows.Err()
+}
+
+// AssignRole assigns a role to a user.
+func (s *SQLiteStore) AssignRole(ctx context.Context, userID, roleID string) error {
+	if userID == "" || roleID == "" {
+		return errors.New("userID and roleID are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := generateID()
+	_, err := s.db.ExecContext(ctx,
+		"INSERT OR IGNORE INTO user_roles (id, user_id, role_id, created_at) VALUES (?, ?, ?, ?)",
+		id, userID, roleID, time.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to assign role: %w", err)
+	}
+
+	return nil
+}
+
+// RevokeRole removes a role from a user.
+func (s *SQLiteStore) RevokeRole(ctx context.Context, userID, roleID string) error {
+	if userID == "" || roleID == "" {
+		return errors.New("userID and roleID are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM user_roles WHERE user_id = ? AND role_id = ?",
+		userID, roleID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to revoke role: %w", err)
+	}
+
+	return nil
+}
+
+// Host Permission operations.
+
+// GetHostPermissions returns all host permissions for a user.
+func (s *SQLiteStore) GetHostPermissions(ctx context.Context, userID string) ([]HostPermission, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, host_id, can_sudo, expires_at, created_at, updated_at
+		 FROM host_permissions WHERE user_id = ?`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get host permissions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var perms []HostPermission
+	for rows.Next() {
+		var perm HostPermission
+		var expiresAt sql.NullTime
+
+		if err := rows.Scan(&perm.ID, &perm.UserID, &perm.HostID, &perm.CanSudo, &expiresAt, &perm.CreatedAt, &perm.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan permission: %w", err)
+		}
+
+		if expiresAt.Valid {
+			perm.ExpiresAt = expiresAt.Time
+		}
+		perms = append(perms, perm)
+	}
+
+	return perms, rows.Err()
+}
+
+// GetHostPermission returns a specific host permission.
+func (s *SQLiteStore) GetHostPermission(ctx context.Context, userID, hostID string) (*HostPermission, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var perm HostPermission
+	var expiresAt sql.NullTime
+
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, host_id, can_sudo, expires_at, created_at, updated_at
+		 FROM host_permissions WHERE user_id = ? AND host_id = ?`,
+		userID, hostID,
+	).Scan(&perm.ID, &perm.UserID, &perm.HostID, &perm.CanSudo, &expiresAt, &perm.CreatedAt, &perm.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, errors.New("permission not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get permission: %w", err)
+	}
+
+	if expiresAt.Valid {
+		perm.ExpiresAt = expiresAt.Time
+	}
+
+	return &perm, nil
+}
+
+// GrantHostAccess grants a user access to a host.
+func (s *SQLiteStore) GrantHostAccess(ctx context.Context, perm *HostPermission) error {
+	if perm.UserID == "" || perm.HostID == "" {
+		return errors.New("userID and hostID are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if perm.ID == "" {
+		perm.ID = generateID()
+	}
+	perm.CreatedAt = time.Now()
+	perm.UpdatedAt = perm.CreatedAt
+
+	var expiresAt interface{}
+	if !perm.ExpiresAt.IsZero() {
+		expiresAt = perm.ExpiresAt
+	}
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO host_permissions (id, user_id, host_id, can_sudo, expires_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		perm.ID, perm.UserID, perm.HostID, perm.CanSudo, expiresAt, perm.CreatedAt, perm.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to grant host access: %w", err)
+	}
+
+	return nil
+}
+
+// RevokeHostAccess removes a user's access to a host.
+func (s *SQLiteStore) RevokeHostAccess(ctx context.Context, userID, hostID string) error {
+	if userID == "" || hostID == "" {
+		return errors.New("userID and hostID are required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM host_permissions WHERE user_id = ? AND host_id = ?",
+		userID, hostID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to revoke host access: %w", err)
+	}
+
+	return nil
+}
+
+// ListUsersWithHostAccess returns all users with access to a specific host.
+func (s *SQLiteStore) ListUsersWithHostAccess(ctx context.Context, hostID string) ([]HostPermission, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, host_id, can_sudo, expires_at, created_at, updated_at
+		 FROM host_permissions WHERE host_id = ?`,
+		hostID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list users with host access: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var perms []HostPermission
+	for rows.Next() {
+		var perm HostPermission
+		var expiresAt sql.NullTime
+
+		if err := rows.Scan(&perm.ID, &perm.UserID, &perm.HostID, &perm.CanSudo, &expiresAt, &perm.CreatedAt, &perm.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan permission: %w", err)
+		}
+
+		if expiresAt.Valid {
+			perm.ExpiresAt = expiresAt.Time
+		}
+		perms = append(perms, perm)
+	}
+
+	return perms, rows.Err()
+}
+
+// InitDefaultRoles initializes the default system roles if they don't exist.
+func (s *SQLiteStore) InitDefaultRoles(ctx context.Context) error {
+	defaultRoles := []struct {
+		Name        string
+		DisplayName string
+		Description string
+		Permissions []string
+	}{
+		{
+			Name:        "admin",
+			DisplayName: "Administrator",
+			Description: "Full system access",
+			Permissions: []string{
+				"host:connect", "host:view", "host:create", "host:update", "host:delete",
+				"user:view", "user:create", "user:update", "user:delete",
+				"session:view", "session:watch", "session:terminate",
+				"recording:view", "recording:delete",
+				"sshkey:view", "sshkey:create", "sshkey:delete",
+				"iam:view", "iam:manage",
+				"audit:view",
+				"settings:view", "settings:update",
+			},
+		},
+		{
+			Name:        "developer",
+			DisplayName: "Developer",
+			Description: "Access to assigned hosts for development",
+			Permissions: []string{
+				"host:connect", "host:view",
+				"session:view",
+				"recording:view",
+			},
+		},
+		{
+			Name:        "ops",
+			DisplayName: "Operations",
+			Description: "Access to assigned hosts for operations",
+			Permissions: []string{
+				"host:connect", "host:view", "host:create", "host:update",
+				"user:view",
+				"session:view", "session:watch",
+				"recording:view",
+				"sshkey:view", "sshkey:create",
+			},
+		},
+		{
+			Name:        "tester",
+			DisplayName: "Tester",
+			Description: "Limited access for testing",
+			Permissions: []string{
+				"host:connect", "host:view",
+				"session:view",
+			},
+		},
+		{
+			Name:        "auditor",
+			DisplayName: "Auditor",
+			Description: "Read-only access to logs and sessions",
+			Permissions: []string{
+				"host:view",
+				"user:view",
+				"session:view",
+				"recording:view",
+				"audit:view",
+			},
+		},
+	}
+
+	for _, r := range defaultRoles {
+		// Check if role already exists.
+		_, err := s.GetRoleByName(ctx, r.Name)
+		if err == nil {
+			continue // Role exists.
+		}
+
+		role := &Role{
+			Name:        r.Name,
+			DisplayName: r.DisplayName,
+			Description: r.Description,
+			Permissions: r.Permissions,
+			IsSystem:    true,
+		}
+		if err := s.CreateRole(ctx, role); err != nil {
+			return fmt.Errorf("failed to create default role %s: %w", r.Name, err)
+		}
+	}
+
+	return nil
+}
+
