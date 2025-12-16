@@ -1,0 +1,24 @@
+# OWASP ZAP Rule Configuration
+# Format: Rule ID	Action	Reason
+# Actions: IGNORE, WARN, FAIL
+# See: https://www.zaproxy.org/docs/docker/baseline-scan/
+
+# Informational rules - set to WARN
+10021	WARN	X-Content-Type-Options Header Missing
+10036	WARN	Server Leaks Version Information
+10038	WARN	Content Security Policy (CSP) Header Not Set
+
+# Low severity - set to WARN
+10020	WARN	X-Frame-Options Header Not Set
+10063	WARN	Permissions Policy Header Not Set
+
+# Medium severity - default WARN
+10010	WARN	Cookie Without HttpOnly Flag
+10011	WARN	Cookie Without Secure Flag
+
+# High severity - FAIL
+40012	FAIL	Cross Site Scripting (Reflected)
+40014	FAIL	Cross Site Scripting (Persistent)
+40018	FAIL	SQL Injection
+90019	FAIL	Server Side Include
+90020	FAIL	Remote OS Command Injection

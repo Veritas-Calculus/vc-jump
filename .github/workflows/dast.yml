@@ -1,0 +1,175 @@
+name: Dynamic Security Test (DAST)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sunday at 2:00 UTC
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  dast:
+    name: Dynamic Security Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build application
+        run: go build -o vc-jump ./cmd/vc-jump
+
+      - name: Create test config
+        run: |
+          mkdir -p /tmp/vc-jump-test
+          cat > /tmp/vc-jump-test/config.yaml << 'EOF'
+          server:
+            listen_addr: "127.0.0.1:2222"
+            max_connections: 100
+          
+          dashboard:
+            enabled: true
+            listen_addr: "127.0.0.1:8080"
+            session_timeout: 24h
+          
+          storage:
+            type: sqlite
+            db_path: /tmp/vc-jump-test/vc-jump.db
+          
+          auth:
+            type: local
+          
+          logging:
+            level: info
+            format: text
+            output: stdout
+          
+          audit:
+            enabled: true
+            storage_path: /tmp/vc-jump-test/audit
+          
+          recording:
+            enabled: false
+          EOF
+
+      - name: Start application
+        run: |
+          ./vc-jump --config /tmp/vc-jump-test/config.yaml &
+          echo $! > /tmp/vc-jump.pid
+          # Wait for startup
+          sleep 5
+          # Check if running
+          if ! kill -0 $(cat /tmp/vc-jump.pid) 2>/dev/null; then
+            echo "Application failed to start"
+            exit 1
+          fi
+          echo "Application started successfully"
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for dashboard..."
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8080 > /dev/null 2>&1; then
+              echo "Dashboard is ready"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+      - name: Run Nikto web scanner
+        run: |
+          sudo apt-get update && sudo apt-get install -y nikto
+          nikto -h http://127.0.0.1:8080 -output nikto-results.txt -Format txt || true
+          cat nikto-results.txt
+
+      - name: Run OWASP ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://127.0.0.1:8080'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j'
+          allow_issue_writing: false
+        continue-on-error: true
+
+      - name: Upload ZAP results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'results.sarif'
+        continue-on-error: true
+
+      - name: Run SSH security tests
+        run: |
+          # Install ssh-audit
+          pip install ssh-audit
+          
+          # Wait for SSH to be ready
+          for i in {1..30}; do
+            if nc -z 127.0.0.1 2222 2>/dev/null; then
+              echo "SSH port is ready"
+              break
+            fi
+            echo "Waiting for SSH... ($i/30)"
+            sleep 2
+          done
+          
+          # Run ssh-audit
+          ssh-audit 127.0.0.1:2222 || true
+
+      - name: Run API security tests
+        run: |
+          echo "=== API Security Tests ==="
+          
+          # Test for common security headers
+          echo "--- Checking security headers ---"
+          curl -s -I http://127.0.0.1:8080 | head -20
+          
+          # Test login endpoint for rate limiting info
+          echo "--- Testing login endpoint ---"
+          for i in {1..5}; do
+            curl -s -X POST http://127.0.0.1:8080/api/login \
+              -H "Content-Type: application/json" \
+              -d '{"username":"test","password":"wrong"}' \
+              -w "\nHTTP Code: %{http_code}\n" || true
+          done
+          
+          # Test for directory traversal
+          echo "--- Testing path traversal ---"
+          curl -s "http://127.0.0.1:8080/../../../etc/passwd" -w "\nHTTP Code: %{http_code}\n" || true
+          curl -s "http://127.0.0.1:8080/api/recordings/..%2F..%2F..%2Fetc%2Fpasswd" -w "\nHTTP Code: %{http_code}\n" || true
+          
+          # Test for SQL injection patterns
+          echo "--- Testing SQL injection patterns ---"
+          curl -s -X POST http://127.0.0.1:8080/api/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"admin'\'' OR 1=1--","password":"test"}' \
+            -w "\nHTTP Code: %{http_code}\n" || true
+
+      - name: Stop application
+        if: always()
+        run: |
+          if [ -f /tmp/vc-jump.pid ]; then
+            kill $(cat /tmp/vc-jump.pid) 2>/dev/null || true
+          fi
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dast-results
+          path: |
+            nikto-results.txt
+            results.sarif
+          retention-days: 30
