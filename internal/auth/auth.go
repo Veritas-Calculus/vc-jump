@@ -3,6 +3,7 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -214,8 +215,12 @@ func (a *Authenticator) verifyUserPublicKey(user *storage.User, fingerprint stri
 	return false
 }
 
+// cacheKeyHMACSecret is used for HMAC-based cache key generation.
+// This is a fixed key used only for cache indexing, not for security.
+var cacheKeyHMACSecret = []byte("vc-jump-cache-key-v1")
+
 func (a *Authenticator) cacheKey(username, password string) string {
-	h := sha256.New()
+	h := hmac.New(sha256.New, cacheKeyHMACSecret)
 	h.Write([]byte(username))
 	h.Write([]byte(":"))
 	h.Write([]byte(password))
@@ -223,7 +228,7 @@ func (a *Authenticator) cacheKey(username, password string) string {
 }
 
 func (a *Authenticator) cacheKeyPublicKey(username, fingerprint string) string {
-	h := sha256.New()
+	h := hmac.New(sha256.New, cacheKeyHMACSecret)
 	h.Write([]byte(username))
 	h.Write([]byte(":"))
 	h.Write([]byte(fingerprint))
