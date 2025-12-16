@@ -97,7 +97,7 @@ func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg co
 
 	s.server = &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      s.mux,
+		Handler:      s.securityHeaders(s.mux),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -189,6 +189,42 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 // Middleware.
+
+// securityHeaders adds security headers to all responses.
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Anti-clickjacking
+		w.Header().Set("X-Frame-Options", "DENY")
+
+		// Prevent MIME type sniffing
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		// XSS Protection (legacy, but still useful)
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+
+		// Content Security Policy
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; font-src 'self'")
+
+		// Referrer Policy
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+
+		// Permissions Policy (formerly Feature-Policy)
+		w.Header().Set("Permissions-Policy", "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()")
+
+		// Spectre/Meltdown mitigations
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
+
+		// Cache control for sensitive pages
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
+			w.Header().Set("Pragma", "no-cache")
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
 
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
