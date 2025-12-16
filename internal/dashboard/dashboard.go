@@ -168,6 +168,10 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/audit", s.requireAuth(s.handleAuditLogs))
 	s.mux.HandleFunc("/api/audit/stats", s.requireAuth(s.handleAuditStats))
 
+	// SEO/crawler control.
+	s.mux.HandleFunc("/robots.txt", s.handleRobotsTxt)
+	s.mux.HandleFunc("/sitemap.xml", s.handleSitemapXml)
+
 	// Static files.
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	fileServer := http.FileServer(http.FS(staticFS))
@@ -1134,4 +1138,24 @@ func (s *Server) logAudit(eventType, username, sourceIP, targetHost, action, res
 	defer cancel()
 
 	_ = s.store.CreateAuditLog(ctx, log)
+}
+
+// handleRobotsTxt serves robots.txt to control crawler access.
+func (s *Server) handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	// Disallow all crawlers - this is an internal admin dashboard
+	robotsTxt := `User-agent: *
+Disallow: /
+`
+	w.Write([]byte(robotsTxt))
+}
+
+// handleSitemapXml returns an empty sitemap - internal dashboard doesn't need indexing.
+func (s *Server) handleSitemapXml(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	sitemap := `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+</urlset>
+`
+	w.Write([]byte(sitemap))
 }
