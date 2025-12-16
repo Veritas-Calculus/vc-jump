@@ -1,0 +1,17 @@
+# Gitleaks configuration
+# https://github.com/gitleaks/gitleaks
+
+[allowlist]
+  description = "Allowlist for test files with fake/placeholder keys"
+  
+  # Allow test files with placeholder private keys
+  paths = [
+    '''_test\.go$''',
+  ]
+  
+  # Allow specific placeholder patterns
+  regexes = [
+    '''-----BEGIN PRIVATE KEY-----\\n\.\.\.\\n-----END PRIVATE KEY-----''',
+    '''-----BEGIN RSA PRIVATE KEY-----\\n\.\.\.\\n-----END RSA PRIVATE KEY-----''',
+    '''-----BEGIN OPENSSH PRIVATE KEY-----\\n\.\.\.\\n-----END OPENSSH PRIVATE KEY-----''',
+  ]
