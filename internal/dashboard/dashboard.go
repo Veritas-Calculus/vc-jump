@@ -164,6 +164,10 @@ func (s *Server) setupRoutes() {
 	// Dashboard stats.
 	s.mux.HandleFunc("/api/stats", s.requireAuth(s.handleStats))
 
+	// Audit logs.
+	s.mux.HandleFunc("/api/audit", s.requireAuth(s.handleAuditLogs))
+	s.mux.HandleFunc("/api/audit/stats", s.requireAuth(s.handleAuditStats))
+
 	// Static files.
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	fileServer := http.FileServer(http.FS(staticFS))
@@ -243,8 +247,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceIP := r.RemoteAddr
+	if fwdIP := r.Header.Get("X-Forwarded-For"); fwdIP != "" {
+		sourceIP = fwdIP
+	}
+
 	user, err := s.auth.AuthenticatePassword(r.Context(), req.Username, req.Password)
 	if err != nil {
+		s.logAudit("dashboard_login", req.Username, sourceIP, "", "dashboard login failed", "failure", nil)
 		s.jsonError(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
@@ -254,6 +264,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, "failed to create session", http.StatusInternalServerError)
 		return
 	}
+
+	// Log successful login.
+	s.logAudit("dashboard_login", req.Username, sourceIP, "", "dashboard login", "success", nil)
 
 	// Set session cookie.
 	http.SetCookie(w, &http.Cookie{
@@ -1062,4 +1075,27 @@ func startsWithDotDot(path string) bool {
 		return false
 	}
 	return path[0] == '.' && path[1] == '.' && (len(path) == 2 || path[2] == filepath.Separator)
+}
+
+// logAudit logs an audit event to SQLite storage.
+func (s *Server) logAudit(eventType, username, sourceIP, targetHost, action, result string, details map[string]interface{}) {
+	if s.store == nil {
+		return
+	}
+
+	log := &storage.AuditLog{
+		Timestamp:  time.Now(),
+		EventType:  eventType,
+		Username:   username,
+		SourceIP:   sourceIP,
+		TargetHost: targetHost,
+		Action:     action,
+		Result:     result,
+		Details:    details,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_ = s.store.CreateAuditLog(ctx, log)
 }

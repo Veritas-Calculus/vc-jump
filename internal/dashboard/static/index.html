@@ -74,6 +74,16 @@
         .btn-del { background: #c00; color: #fff; border: none; }
         .btn-del:hover { background: #900; }
         
+        /* Audit log badges */
+        .event-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: bold; }
+        .event-login, .event-ssh_login { background: #d4edda; color: #155724; }
+        .event-connect { background: #cce5ff; color: #004085; }
+        .event-dashboard_login { background: #e2d5f1; color: #5e3b8f; }
+        .event-logout { background: #fff3cd; color: #856404; }
+        .result-badge { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; }
+        .result-success { background: #d4edda; color: #155724; }
+        .result-failure, .result-failed { background: #f8d7da; color: #721c24; }
+        
         /* Modal */
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
         .modal.active { display: flex; }
@@ -129,6 +139,7 @@
                     <li><a href="#keys" data-section="keys" data-permission="sshkey:view">SSH Keys</a></li>
                     <li><a href="#sessions" data-section="sessions" data-permission="session:view">Sessions</a></li>
                     <li><a href="#recordings" data-section="recordings" data-permission="recording:view">Recordings</a></li>
+                    <li><a href="#audit" data-section="audit" data-permission="audit:view">Audit Logs</a></li>
                     <li><a href="#iam" data-section="iam" data-permission="iam:view">IAM</a></li>
                     <li><a href="#settings" data-section="settings" data-permission="settings:view">Settings</a></li>
                 </ul>
@@ -220,6 +231,41 @@
                         <thead><tr><th style="width:30px"><input type="checkbox" id="selectAllHeader" onchange="toggleSelectAll(this.checked)"></th><th>Filename</th><th>Size</th><th>Date</th><th>Action</th></tr></thead>
                         <tbody id="recordings-table"></tbody>
                     </table>
+                </div>
+
+                <div class="section" id="section-audit">
+                    <h2>Audit Logs</h2>
+                    <div style="margin-bottom:15px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+                        <input type="text" id="audit-filter-username" placeholder="Username" style="width:120px;padding:5px">
+                        <select id="audit-filter-type" style="padding:5px">
+                            <option value="">All Events</option>
+                            <option value="login">Login</option>
+                            <option value="ssh_login">SSH Login</option>
+                            <option value="connect">Connect</option>
+                            <option value="dashboard_login">Dashboard Login</option>
+                            <option value="logout">Logout</option>
+                        </select>
+                        <input type="date" id="audit-filter-start" style="padding:5px">
+                        <span>to</span>
+                        <input type="date" id="audit-filter-end" style="padding:5px">
+                        <button class="btn-sm" onclick="loadAuditLogs()">Filter</button>
+                        <button class="btn-sm" onclick="clearAuditFilters()">Clear</button>
+                    </div>
+                    <div id="audit-stats" style="margin-bottom:15px;display:flex;gap:20px;flex-wrap:wrap">
+                        <span>Last 24h: <strong id="audit-stat-total">0</strong> events</span>
+                        <span>Logins: <strong id="audit-stat-logins">0</strong></span>
+                        <span>Connections: <strong id="audit-stat-connects">0</strong></span>
+                        <span>Failures: <strong id="audit-stat-failures" style="color:#c00">0</strong></span>
+                    </div>
+                    <table style="margin-top:10px">
+                        <thead><tr><th>Time</th><th>Event</th><th>User</th><th>Source IP</th><th>Target</th><th>Result</th><th>Details</th></tr></thead>
+                        <tbody id="audit-table"></tbody>
+                    </table>
+                    <div style="margin-top:15px;display:flex;gap:10px;align-items:center">
+                        <button class="btn-sm" onclick="auditPrevPage()" id="audit-prev-btn" disabled>&laquo; Previous</button>
+                        <span>Page <span id="audit-page">1</span></span>
+                        <button class="btn-sm" onclick="auditNextPage()" id="audit-next-btn">Next &raquo;</button>
+                    </div>
                 </div>
 
                 <div class="section" id="section-iam">
@@ -722,7 +768,7 @@
         // ============================================================
         // Hash-based Routing
         // ============================================================
-        const validSections = ['overview', 'hosts', 'users', 'keys', 'sessions', 'recordings', 'iam', 'settings'];
+        const validSections = ['overview', 'hosts', 'users', 'keys', 'sessions', 'recordings', 'audit', 'iam', 'settings'];
         
         // Map sections to required permissions
         const sectionPermissions = {
@@ -732,6 +778,7 @@
             'keys': 'sshkey:view',
             'sessions': 'session:view',
             'recordings': 'recording:view',
+            'audit': 'audit:view',
             'iam': 'iam:view',
             'settings': 'settings:view'
         };
@@ -793,6 +840,7 @@
             else if (s === 'keys') loadKeys();
             else if (s === 'sessions') loadSessions();
             else if (s === 'recordings') loadRecordings();
+            else if (s === 'audit') { loadAuditLogs(); loadAuditStats(); }
             else if (s === 'iam') loadIam();
             else if (s === 'settings') loadSettings();
         }
@@ -1236,6 +1284,80 @@
             if (bytes < 1024) return bytes + ' B';
             if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
             return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        // ============================================================
+        // Audit Logs
+        // ============================================================
+        let auditPage = 1;
+        const auditLimit = 50;
+
+        async function loadAuditLogs() {
+            try {
+                const username = document.getElementById('audit-filter-username').value;
+                const eventType = document.getElementById('audit-filter-type').value;
+                const startDate = document.getElementById('audit-filter-start').value;
+                const endDate = document.getElementById('audit-filter-end').value;
+
+                let url = `/api/audit?limit=${auditLimit}&offset=${(auditPage - 1) * auditLimit}`;
+                if (username) url += `&username=${encodeURIComponent(username)}`;
+                if (eventType) url += `&event_type=${encodeURIComponent(eventType)}`;
+                if (startDate) url += `&start_time=${encodeURIComponent(startDate + 'T00:00:00Z')}`;
+                if (endDate) url += `&end_time=${encodeURIComponent(endDate + 'T23:59:59Z')}`;
+
+                const logs = await (await fetch(url, { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                
+                document.getElementById('audit-page').textContent = auditPage;
+                document.getElementById('audit-prev-btn').disabled = auditPage <= 1;
+                document.getElementById('audit-next-btn').disabled = logs.length < auditLimit;
+
+                document.getElementById('audit-table').innerHTML = logs.length ? logs.map(log => 
+                    `<tr>
+                        <td style="white-space:nowrap">${new Date(log.timestamp).toLocaleString()}</td>
+                        <td><span class="event-badge event-${log.event_type}">${escapeHtml(log.event_type)}</span></td>
+                        <td>${escapeHtml(log.username || '-')}</td>
+                        <td>${escapeHtml(log.source_ip || '-')}</td>
+                        <td>${escapeHtml(log.target_host || '-')}</td>
+                        <td><span class="result-badge result-${log.result}">${escapeHtml(log.result || '-')}</span></td>
+                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(JSON.stringify(log.details || {}))}">${escapeHtml(log.action || '-')}</td>
+                    </tr>`
+                ).join('') : '<tr><td colspan="7" style="text-align:center;color:#888">No audit logs found</td></tr>';
+            } catch (e) { 
+                console.error('Failed to load audit logs:', e); 
+            }
+        }
+
+        async function loadAuditStats() {
+            try {
+                const stats = await (await fetch('/api/audit/stats', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                document.getElementById('audit-stat-total').textContent = stats.total || 0;
+                document.getElementById('audit-stat-logins').textContent = stats.logins || 0;
+                document.getElementById('audit-stat-connects').textContent = stats.connects || 0;
+                document.getElementById('audit-stat-failures').textContent = stats.failures || 0;
+            } catch (e) {
+                console.error('Failed to load audit stats:', e);
+            }
+        }
+
+        function auditPrevPage() {
+            if (auditPage > 1) {
+                auditPage--;
+                loadAuditLogs();
+            }
+        }
+
+        function auditNextPage() {
+            auditPage++;
+            loadAuditLogs();
+        }
+
+        function clearAuditFilters() {
+            document.getElementById('audit-filter-username').value = '';
+            document.getElementById('audit-filter-type').value = '';
+            document.getElementById('audit-filter-start').value = '';
+            document.getElementById('audit-filter-end').value = '';
+            auditPage = 1;
+            loadAuditLogs();
         }
 
         // ============================================================

@@ -82,6 +82,20 @@ type Session struct {
 	Recording  string    `json:"recording,omitempty"`
 }
 
+// AuditLog represents an audit log entry.
+type AuditLog struct {
+	ID         string                 `json:"id"`
+	Timestamp  time.Time              `json:"timestamp"`
+	EventType  string                 `json:"event_type"`
+	Username   string                 `json:"username"`
+	SourceIP   string                 `json:"source_ip,omitempty"`
+	TargetHost string                 `json:"target_host,omitempty"`
+	Action     string                 `json:"action"`
+	Result     string                 `json:"result"`
+	Details    map[string]interface{} `json:"details,omitempty"`
+	CreatedAt  time.Time              `json:"created_at"`
+}
+
 // Role represents a role with associated permissions.
 type Role struct {
 	ID          string    `json:"id"`
@@ -128,6 +142,10 @@ type Store interface {
 	ListSessions(ctx context.Context, username string, limit int) ([]Session, error)
 	CreateSession(ctx context.Context, session *Session) error
 	UpdateSession(ctx context.Context, session *Session) error
+
+	// Audit log operations.
+	CreateAuditLog(ctx context.Context, log *AuditLog) error
+	ListAuditLogs(ctx context.Context, username, eventType string, startTime, endTime time.Time, limit, offset int) ([]AuditLog, error)
 
 	// Lifecycle.
 	Close() error
@@ -438,6 +456,18 @@ func (s *FileStore) UpdateSession(ctx context.Context, session *Session) error {
 	}
 	s.sessions[session.ID] = session
 	return s.saveSessions()
+}
+
+// CreateAuditLog is a no-op for FileStore (audit logs not supported in file storage).
+func (s *FileStore) CreateAuditLog(ctx context.Context, log *AuditLog) error {
+	// File-based storage does not support audit logs.
+	return nil
+}
+
+// ListAuditLogs returns empty for FileStore (audit logs not supported in file storage).
+func (s *FileStore) ListAuditLogs(ctx context.Context, username, eventType string, startTime, endTime time.Time, limit, offset int) ([]AuditLog, error) {
+	// File-based storage does not support audit logs.
+	return []AuditLog{}, nil
 }
 
 func (s *FileStore) Close() error {

@@ -336,6 +336,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	if s.auditor != nil {
 		s.auditor.LogLogin(username, sourceIP, "success")
 	}
+	s.logAudit("ssh_login", username, sourceIP, "", "user login via SSH", "success", nil)
 
 	// Discard global requests.
 	go ssh.DiscardRequests(reqs)
@@ -502,6 +503,7 @@ func (s *Server) verifyOTP(channel ssh.Channel, username string) bool {
 		if s.auditor != nil {
 			s.auditor.LogLogin(username, "", "otp_failed")
 		}
+		s.logAudit("login", username, "", "", "OTP verification failed", "failure", nil)
 		return false
 	}
 
@@ -553,6 +555,7 @@ func (s *Server) logConnectEvent(username, sourceIP, hostName string) {
 	if s.auditor != nil {
 		s.auditor.LogConnect(username, sourceIP, hostName, "success")
 	}
+	s.logAudit("connect", username, sourceIP, hostName, "connect to host", "success", nil)
 }
 
 func (s *Server) createDBSession(username, sourceIP, targetHost string) *storage.Session {
@@ -1102,5 +1105,30 @@ func readLine(r io.Reader) (string, error) {
 				line = append(line, b)
 			}
 		}
+	}
+}
+
+// logAudit logs an audit event to SQLite storage.
+func (s *Server) logAudit(eventType, username, sourceIP, targetHost, action, result string, details map[string]interface{}) {
+	if s.sqliteStore == nil {
+		return
+	}
+
+	log := &storage.AuditLog{
+		Timestamp:  time.Now(),
+		EventType:  eventType,
+		Username:   username,
+		SourceIP:   sourceIP,
+		TargetHost: targetHost,
+		Action:     action,
+		Result:     result,
+		Details:    details,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := s.sqliteStore.CreateAuditLog(ctx, log); err != nil {
+		s.logger.Warnf("failed to create audit log: %v", err)
 	}
 }

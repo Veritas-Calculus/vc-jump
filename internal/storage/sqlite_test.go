@@ -607,6 +607,109 @@ func createTestStore(t *testing.T) *SQLiteStore {
 	return store
 }
 
+func TestSQLiteStore_AuditLogCreate(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	log1 := &AuditLog{
+		Timestamp:  time.Now(),
+		EventType:  "login",
+		Username:   "testuser",
+		SourceIP:   "192.168.1.100",
+		TargetHost: "",
+		Action:     "user login",
+		Result:     "success",
+		Details:    map[string]interface{}{"method": "password"},
+	}
+
+	err := store.CreateAuditLog(ctx, log1)
+	if err != nil {
+		t.Fatalf("failed to create audit log: %v", err)
+	}
+
+	if log1.ID == "" {
+		t.Error("expected ID to be set after create")
+	}
+}
+
+func TestSQLiteStore_AuditLogFilter(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Create test data.
+	testLogs := []*AuditLog{
+		{Timestamp: time.Now(), EventType: "login", Username: "testuser", SourceIP: "192.168.1.100", Action: "user login", Result: "success"},
+		{Timestamp: time.Now(), EventType: "connect", Username: "testuser", SourceIP: "192.168.1.100", TargetHost: "server1.example.com", Action: "connect to host", Result: "success"},
+		{Timestamp: time.Now(), EventType: "login", Username: "admin", SourceIP: "10.0.0.50", Action: "user login", Result: "failure"},
+	}
+	for _, log := range testLogs {
+		if err := store.CreateAuditLog(ctx, log); err != nil {
+			t.Fatalf("failed to create audit log: %v", err)
+		}
+	}
+
+	// Filter by username.
+	logs, err := store.ListAuditLogs(ctx, "testuser", "", time.Time{}, time.Time{}, 100, 0)
+	if err != nil {
+		t.Fatalf("failed to list audit logs by username: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Errorf("expected 2 logs for testuser, got %d", len(logs))
+	}
+
+	// Filter by event type.
+	logs, err = store.ListAuditLogs(ctx, "", "login", time.Time{}, time.Time{}, 100, 0)
+	if err != nil {
+		t.Fatalf("failed to list audit logs by event type: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Errorf("expected 2 login logs, got %d", len(logs))
+	}
+
+	// Filter by event type - connect.
+	logs, err = store.ListAuditLogs(ctx, "", "connect", time.Time{}, time.Time{}, 100, 0)
+	if err != nil {
+		t.Fatalf("failed to list audit logs by connect type: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Errorf("expected 1 connect log, got %d", len(logs))
+	}
+}
+
+func TestSQLiteStore_AuditLogPagination(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Create 5 test logs.
+	for i := 0; i < 5; i++ {
+		log := &AuditLog{Timestamp: time.Now(), EventType: "login", Username: "user", Action: "test", Result: "success"}
+		if err := store.CreateAuditLog(ctx, log); err != nil {
+			t.Fatalf("failed to create audit log: %v", err)
+		}
+	}
+
+	// Test limit.
+	logs, err := store.ListAuditLogs(ctx, "", "", time.Time{}, time.Time{}, 2, 0)
+	if err != nil {
+		t.Fatalf("failed to list audit logs with limit: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Errorf("expected 2 logs with limit, got %d", len(logs))
+	}
+
+	// Test offset.
+	logs, err = store.ListAuditLogs(ctx, "", "", time.Time{}, time.Time{}, 100, 3)
+	if err != nil {
+		t.Fatalf("failed to list audit logs with offset: %v", err)
+	}
+	if len(logs) != 2 {
+		t.Errorf("expected 2 logs with offset 3, got %d", len(logs))
+	}
+}
+
 // Cleanup test files.
 func TestMain(m *testing.M) {
 	code := m.Run()
