@@ -284,8 +284,8 @@ func createHostKeyCallback(knownHostsPath string, insecureIgnore bool) (ssh.Host
 }
 
 func getUserForHost(host config.HostConfig) string {
-	if len(host.Users) > 0 {
-		return host.Users[0]
+	if host.User != "" {
+		return host.User
 	}
 	return "root"
 }

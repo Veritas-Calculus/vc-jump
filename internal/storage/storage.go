@@ -14,6 +14,17 @@ import (
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
 )
 
+// Folder represents a folder for organizing hosts in a tree structure.
+type Folder struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	ParentID    string    `json:"parent_id,omitempty"` // Empty for root folders.
+	Path        string    `json:"path"`                // Full path like "/prod/web-servers".
+	Description string    `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 // Host represents a host record in storage.
 type Host struct {
 	ID                    string    `json:"id"`
@@ -23,8 +34,9 @@ type Host struct {
 	User                  string    `json:"user"`  // SSH username for target host.
 	Users                 []string  `json:"users"` // Deprecated: use User field.
 	Groups                []string  `json:"groups"`
-	KeyID                 string    `json:"key_id,omitempty"`   // Reference to SSH key in database.
-	KeyPath               string    `json:"key_path,omitempty"` // File path for backward compatibility.
+	FolderID              string    `json:"folder_id,omitempty"` // Folder this host belongs to.
+	KeyID                 string    `json:"key_id,omitempty"`    // Reference to SSH key in database.
+	KeyPath               string    `json:"key_path,omitempty"`  // File path for backward compatibility.
 	InsecureIgnoreHostKey bool      `json:"insecure_ignore_host_key,omitempty"`
 	CreatedAt             time.Time `json:"created_at"`
 	UpdatedAt             time.Time `json:"updated_at"`

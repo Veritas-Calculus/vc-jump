@@ -127,11 +127,24 @@
 
                 <div class="section" id="section-hosts">
                     <h2>Hosts</h2>
-                    <button class="btn-sm btn-add" onclick="showModal('addHostModal')" data-perm-create="host:create">+ Add Host</button>
-                    <table>
-                        <thead><tr><th>Name</th><th>Address</th><th>Port</th><th>SSH Key</th><th>Users</th><th>Action</th></tr></thead>
-                        <tbody id="hosts-table"></tbody>
-                    </table>
+                    <div style="display:flex;gap:10px;margin-bottom:15px">
+                        <button class="btn-sm btn-add" onclick="showModal('addFolderModal')" data-perm-create="host:create">+ Add Folder</button>
+                        <button class="btn-sm btn-add" onclick="openAddHostModal()" data-perm-create="host:create">+ Add Host</button>
+                        <button class="btn-sm" onclick="toggleTreeView()" id="treeViewBtn">📁 Tree View</button>
+                    </div>
+                    
+                    <!-- Tree View -->
+                    <div id="hosts-tree-view" style="display:none;margin-bottom:20px">
+                        <div id="folder-tree" style="border:1px solid #ddd;border-radius:5px;padding:10px;background:#fafafa;max-height:500px;overflow:auto"></div>
+                    </div>
+                    
+                    <!-- Table View -->
+                    <div id="hosts-table-view">
+                        <table>
+                            <thead><tr><th>Name</th><th>Folder</th><th>Address</th><th>Port</th><th>SSH Key</th><th>Action</th></tr></thead>
+                            <tbody id="hosts-table"></tbody>
+                        </table>
+                    </div>
                 </div>
 
                 <div class="section" id="section-users">
@@ -276,12 +289,30 @@
         </div>
     </div>
 
+    <!-- Add Folder Modal -->
+    <div class="modal" id="addFolderModal">
+        <div class="modal-content">
+            <h3 id="folderModalTitle">Add Folder</h3>
+            <form id="addFolderForm">
+                <input type="hidden" name="id" id="folderEditId">
+                <div class="form-group"><label>Name</label><input type="text" name="name" id="folderName" required placeholder="e.g., production"></div>
+                <div class="form-group"><label>Parent Folder</label><select name="parent_id" id="folderParentId"><option value="">-- Root --</option></select></div>
+                <div class="form-group"><label>Description</label><input type="text" name="description" id="folderDescription" placeholder="Optional description"></div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-sm" onclick="closeModal('addFolderModal')">Cancel</button>
+                    <button type="submit" class="btn-sm btn-add" id="folderSubmitBtn">Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div class="modal" id="addHostModal">
         <div class="modal-content">
             <h3 id="hostModalTitle">Add Host</h3>
             <form id="addHostForm">
                 <input type="hidden" name="id" id="hostEditId">
                 <div class="form-group"><label>Name</label><input type="text" name="name" id="hostName" required></div>
+                <div class="form-group"><label>Folder</label><select name="folder_id" id="hostFolderId"><option value="">-- Root (No Folder) --</option></select></div>
                 <div class="form-group"><label>Address</label><input type="text" name="addr" id="hostAddr" required></div>
                 <div class="form-group"><label>Port</label><input type="number" name="port" id="hostPort" value="22" required></div>
                 <div class="form-group"><label>SSH User</label><input type="text" name="user" id="hostUser" placeholder="e.g., root"></div>
@@ -645,27 +676,236 @@
             return k ? k.name : keyId.slice(0,8);
         }
 
+        let allFolders = [];
+        let isTreeView = false;
+
+        async function loadFolders() {
+            try {
+                const folders = await (await fetch('/api/folders', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                allFolders = folders || [];
+            } catch (e) { console.error(e); }
+        }
+
         async function loadHosts() {
             try {
+                await loadFolders();
                 const hosts = await (await fetch('/api/hosts', { headers: { 'Authorization': 'Bearer ' + token } })).json();
                 allHosts = hosts || [];
                 const canEdit = hasPermission('host:update');
                 const canDelete = hasPermission('host:delete');
-                document.getElementById('hosts-table').innerHTML = allHosts.map(h => 
-                    `<tr>
+                
+                // Build folder path map
+                const folderPathMap = {};
+                allFolders.forEach(f => folderPathMap[f.id] = f.path);
+                
+                document.getElementById('hosts-table').innerHTML = allHosts.map(h => {
+                    const folderPath = h.folder_id ? (folderPathMap[h.folder_id] || '-') : '<span style="color:#999">/</span>';
+                    return `<tr>
                         <td>${h.name}</td>
+                        <td style="color:#666;font-size:12px">${folderPath}</td>
                         <td>${h.addr}</td>
                         <td>${h.port}</td>
                         <td>${getKeyName(h.key_id)}</td>
-                        <td>${h.user || 'root'}</td>
                         <td>
                             ${canEdit ? `<button class="btn-sm" onclick="editHost('${h.id}')">Edit</button>` : ''}
                             ${canDelete ? `<button class="btn-sm btn-del" onclick="deleteHost('${h.id}')">Del</button>` : ''}
                             ${!canEdit && !canDelete ? '-' : ''}
                         </td>
-                    </tr>`
-                ).join('');
-            } catch (e) {}
+                    </tr>`;
+                }).join('');
+                
+                // Update tree view if visible
+                if (isTreeView) {
+                    await loadFolderTree();
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function toggleTreeView() {
+            isTreeView = !isTreeView;
+            document.getElementById('hosts-tree-view').style.display = isTreeView ? 'block' : 'none';
+            document.getElementById('hosts-table-view').style.display = isTreeView ? 'none' : 'block';
+            document.getElementById('treeViewBtn').textContent = isTreeView ? '📋 Table View' : '📁 Tree View';
+            if (isTreeView) loadFolderTree();
+        }
+
+        async function loadFolderTree() {
+            try {
+                const data = await (await fetch('/api/folders?tree=true', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                const canEdit = hasPermission('host:update');
+                const canDelete = hasPermission('host:delete');
+                const canEditFolder = hasPermission('host:update');
+                const canDeleteFolder = hasPermission('host:delete');
+                
+                let html = '';
+                
+                // Render folder tree recursively
+                function renderFolder(folder, depth = 0) {
+                    const indent = depth * 20;
+                    const hostCount = (folder.hosts || []).length;
+                    const subfolderCount = (folder.children || []).length;
+                    let h = `<div class="folder-item" style="margin-left:${indent}px;padding:8px;border-bottom:1px solid #eee">
+                        <div style="display:flex;align-items:center;justify-content:space-between">
+                            <div>
+                                <span style="cursor:pointer" onclick="toggleFolder('${folder.id}')">
+                                    <span id="folder-icon-${folder.id}">📁</span>
+                                    <strong>${folder.name}</strong>
+                                </span>
+                                <span style="color:#888;font-size:12px;margin-left:10px">${folder.path}</span>
+                                <span style="color:#666;font-size:11px;margin-left:5px">(${hostCount} hosts, ${subfolderCount} subfolders)</span>
+                            </div>
+                            <div>
+                                ${canEditFolder ? `<button class="btn-sm" onclick="editFolder('${folder.id}')">Edit</button>` : ''}
+                                ${canDeleteFolder ? `<button class="btn-sm btn-del" onclick="deleteFolder('${folder.id}')">Del</button>` : ''}
+                            </div>
+                        </div>
+                        <div id="folder-content-${folder.id}" style="display:none">`;
+                    
+                    // Render subfolders
+                    (folder.children || []).forEach(child => {
+                        h += renderFolder(child, depth + 1);
+                    });
+                    
+                    // Render hosts in folder
+                    (folder.hosts || []).forEach(host => {
+                        h += `<div style="margin-left:20px;padding:5px;background:#fff;margin-top:5px;border-radius:3px;display:flex;justify-content:space-between;align-items:center">
+                            <span>🖥️ ${host.name} <span style="color:#888;font-size:11px">(${host.addr}:${host.port})</span></span>
+                            <div>
+                                ${canEdit ? `<button class="btn-sm" onclick="editHost('${host.id}')">Edit</button>` : ''}
+                                ${canDelete ? `<button class="btn-sm btn-del" onclick="deleteHost('${host.id}')">Del</button>` : ''}
+                            </div>
+                        </div>`;
+                    });
+                    
+                    h += '</div></div>';
+                    return h;
+                }
+                
+                // Render root folders
+                (data.folders || []).forEach(f => {
+                    html += renderFolder(f);
+                });
+                
+                // Render root-level hosts (no folder)
+                if ((data.hosts || []).length > 0) {
+                    html += `<div style="padding:8px;background:#fff;margin-top:10px;border:1px dashed #ccc;border-radius:5px">
+                        <strong style="color:#888">📂 Root (No Folder)</strong>
+                        <div style="margin-top:5px">`;
+                    (data.hosts || []).forEach(host => {
+                        html += `<div style="padding:5px;display:flex;justify-content:space-between;align-items:center">
+                            <span>🖥️ ${host.name} <span style="color:#888;font-size:11px">(${host.addr}:${host.port})</span></span>
+                            <div>
+                                ${canEdit ? `<button class="btn-sm" onclick="editHost('${host.id}')">Edit</button>` : ''}
+                                ${canDelete ? `<button class="btn-sm btn-del" onclick="deleteHost('${host.id}')">Del</button>` : ''}
+                            </div>
+                        </div>`;
+                    });
+                    html += '</div></div>';
+                }
+                
+                document.getElementById('folder-tree').innerHTML = html || '<p style="color:#888;text-align:center">No folders or hosts yet</p>';
+            } catch (e) { console.error(e); }
+        }
+
+        function toggleFolder(id) {
+            const content = document.getElementById('folder-content-' + id);
+            const icon = document.getElementById('folder-icon-' + id);
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                icon.textContent = '📂';
+            } else {
+                content.style.display = 'none';
+                icon.textContent = '📁';
+            }
+        }
+
+        // Folder CRUD
+        async function loadFoldersForSelect() {
+            await loadFolders();
+            const selects = ['folderParentId', 'hostFolderId'];
+            selects.forEach(selId => {
+                const sel = document.getElementById(selId);
+                if (!sel) return;
+                const currentVal = sel.value;
+                sel.innerHTML = selId === 'folderParentId' 
+                    ? '<option value="">-- Root --</option>' 
+                    : '<option value="">-- Root (No Folder) --</option>';
+                allFolders.forEach(f => {
+                    sel.innerHTML += `<option value="${f.id}">${f.path}</option>`;
+                });
+                sel.value = currentVal;
+            });
+        }
+
+        document.getElementById('addFolderForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const f = e.target;
+            const id = document.getElementById('folderEditId').value;
+            const body = {
+                name: document.getElementById('folderName').value,
+                parent_id: document.getElementById('folderParentId').value,
+                description: document.getElementById('folderDescription').value
+            };
+            
+            if (id) {
+                await fetch('/api/folders/' + id, {
+                    method: 'PUT',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+            } else {
+                await fetch('/api/folders', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+            }
+            closeModal('addFolderModal');
+            f.reset();
+            loadHosts();
+        };
+
+        async function editFolder(id) {
+            await loadFoldersForSelect();
+            const folder = allFolders.find(f => f.id === id);
+            if (!folder) return;
+            document.getElementById('folderModalTitle').textContent = 'Edit Folder';
+            document.getElementById('folderSubmitBtn').textContent = 'Save';
+            document.getElementById('folderEditId').value = folder.id;
+            document.getElementById('folderName').value = folder.name;
+            document.getElementById('folderParentId').value = folder.parent_id || '';
+            document.getElementById('folderDescription').value = folder.description || '';
+            showModal('addFolderModal');
+        }
+
+        async function deleteFolder(id) {
+            if (!confirm('Delete this folder? Hosts and subfolders will be moved to parent.')) return;
+            await fetch('/api/folders/' + id, {
+                method: 'DELETE',
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            loadHosts();
+        }
+
+        async function openAddHostModal() {
+            await loadFoldersForSelect();
+            await loadKeysCache();
+            resetHostForm();
+            showModal('addHostModal');
+        }
+
+        function resetHostForm() {
+            document.getElementById('hostModalTitle').textContent = 'Add Host';
+            document.getElementById('hostSubmitBtn').textContent = 'Add';
+            document.getElementById('hostEditId').value = '';
+            document.getElementById('hostName').value = '';
+            document.getElementById('hostFolderId').value = '';
+            document.getElementById('hostAddr').value = '';
+            document.getElementById('hostPort').value = '22';
+            document.getElementById('hostUser').value = '';
+            document.getElementById('hostKeyId').value = '';
+            document.getElementById('hostGroups').value = '';
+            document.getElementById('hostInsecure').checked = false;
         }
 
         function sourceLabel(src) {
@@ -1322,6 +1562,9 @@
             document.getElementById('hostInsecure').checked = h.insecure_ignore_host_key || false;
             populateKeyDropdown();
             document.getElementById('hostKeyId').value = h.key_id || '';
+            loadFoldersForSelect().then(() => {
+                document.getElementById('hostFolderId').value = h.folder_id || '';
+            });
             showModal('addHostModal');
         }
 
@@ -1331,6 +1574,7 @@
             const id = document.getElementById('hostEditId').value;
             const data = { 
                 name: f.name.value, 
+                folder_id: document.getElementById('hostFolderId').value || '',
                 addr: f.addr.value, 
                 port: parseInt(f.port.value), 
                 user: f.user.value || 'root',

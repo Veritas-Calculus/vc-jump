@@ -50,8 +50,9 @@ type HostConfig struct {
 	Name                  string   `yaml:"name"`
 	Addr                  string   `yaml:"addr"`
 	Port                  int      `yaml:"port"`
-	Users                 []string `yaml:"users"`
-	Groups                []string `yaml:"groups"`
+	User                  string   `yaml:"user"`   // SSH login user for target host.
+	Users                 []string `yaml:"users"`  // Allowed users who can access this host.
+	Groups                []string `yaml:"groups"` // Allowed groups who can access this host.
 	KeyPath               string   `yaml:"key_path"`
 	KnownHostsPath        string   `yaml:"known_hosts_path"`         // Path to known_hosts file for host key verification.
 	InsecureIgnoreHostKey bool     `yaml:"insecure_ignore_host_key"` // Skip host key verification (use only for trusted networks).

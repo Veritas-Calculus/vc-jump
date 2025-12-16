@@ -66,6 +66,20 @@ func NewSQLiteStore(cfg config.StorageConfig) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) initSchema() error {
 	schema := `
+	CREATE TABLE IF NOT EXISTS folders (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		parent_id TEXT,
+		path TEXT NOT NULL,
+		description TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
+	CREATE INDEX IF NOT EXISTS idx_folders_path ON folders(path);
+
 	CREATE TABLE IF NOT EXISTS hosts (
 		id TEXT PRIMARY KEY,
 		name TEXT UNIQUE NOT NULL,
@@ -74,11 +88,15 @@ func (s *SQLiteStore) initSchema() error {
 		user TEXT DEFAULT 'root',
 		users TEXT DEFAULT '[]',
 		groups TEXT DEFAULT '[]',
+		folder_id TEXT,
 		key_id TEXT,
 		insecure_ignore_host_key INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE SET NULL
 	);
+
+	CREATE INDEX IF NOT EXISTS idx_hosts_folder ON hosts(folder_id);
 
 	CREATE TABLE IF NOT EXISTS users (
 		id TEXT PRIMARY KEY,
@@ -304,12 +322,12 @@ func (s *SQLiteStore) GetHost(ctx context.Context, id string) (*Host, error) {
 
 	var host Host
 	var usersJSON, groupsJSON string
-	var keyID, user sql.NullString
+	var keyID, user, folderID sql.NullString
 	var insecureIgnoreHostKey sql.NullBool
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, name, addr, port, user, users, groups, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts WHERE id = ?",
+		"SELECT id, name, addr, port, user, users, groups, folder_id, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts WHERE id = ?",
 		id,
-	).Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt)
+	).Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &folderID, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, errors.New("host not found")
@@ -320,6 +338,9 @@ func (s *SQLiteStore) GetHost(ctx context.Context, id string) (*Host, error) {
 
 	if keyID.Valid {
 		host.KeyID = keyID.String
+	}
+	if folderID.Valid {
+		host.FolderID = folderID.String
 	}
 	if user.Valid {
 		host.User = user.String
@@ -346,12 +367,12 @@ func (s *SQLiteStore) GetHostByName(ctx context.Context, name string) (*Host, er
 
 	var host Host
 	var usersJSON, groupsJSON string
-	var keyID, user sql.NullString
+	var keyID, user, folderID sql.NullString
 	var insecureIgnoreHostKey sql.NullBool
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, name, addr, port, user, users, groups, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts WHERE name = ?",
+		"SELECT id, name, addr, port, user, users, groups, folder_id, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts WHERE name = ?",
 		name,
-	).Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt)
+	).Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &folderID, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, errors.New("host not found")
@@ -362,6 +383,9 @@ func (s *SQLiteStore) GetHostByName(ctx context.Context, name string) (*Host, er
 
 	if keyID.Valid {
 		host.KeyID = keyID.String
+	}
+	if folderID.Valid {
+		host.FolderID = folderID.String
 	}
 	if user.Valid {
 		host.User = user.String
@@ -387,7 +411,7 @@ func (s *SQLiteStore) ListHosts(ctx context.Context) ([]Host, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, name, addr, port, user, users, groups, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts ORDER BY name",
+		"SELECT id, name, addr, port, user, users, groups, folder_id, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts ORDER BY name",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list hosts: %w", err)
@@ -398,14 +422,17 @@ func (s *SQLiteStore) ListHosts(ctx context.Context) ([]Host, error) {
 	for rows.Next() {
 		var host Host
 		var usersJSON, groupsJSON string
-		var keyID, user sql.NullString
+		var keyID, user, folderID sql.NullString
 		var insecureIgnoreHostKey sql.NullBool
-		if err := rows.Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt); err != nil {
+		if err := rows.Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &folderID, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan host: %w", err)
 		}
 
 		if keyID.Valid {
 			host.KeyID = keyID.String
+		}
+		if folderID.Valid {
+			host.FolderID = folderID.String
 		}
 		if user.Valid {
 			host.User = user.String
@@ -450,14 +477,19 @@ func (s *SQLiteStore) CreateHost(ctx context.Context, host *Host) error {
 		keyID = host.KeyID
 	}
 
+	var folderID interface{}
+	if host.FolderID != "" {
+		folderID = host.FolderID
+	}
+
 	insecureVal := 0
 	if host.InsecureIgnoreHostKey {
 		insecureVal = 1
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO hosts (id, name, addr, port, user, users, groups, key_id, insecure_ignore_host_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		host.ID, host.Name, host.Addr, host.Port, host.User, string(usersJSON), string(groupsJSON), keyID, insecureVal, host.CreatedAt, host.UpdatedAt,
+		"INSERT INTO hosts (id, name, addr, port, user, users, groups, folder_id, key_id, insecure_ignore_host_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		host.ID, host.Name, host.Addr, host.Port, host.User, string(usersJSON), string(groupsJSON), folderID, keyID, insecureVal, host.CreatedAt, host.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create host: %w", err)
@@ -484,14 +516,19 @@ func (s *SQLiteStore) UpdateHost(ctx context.Context, host *Host) error {
 		keyID = host.KeyID
 	}
 
+	var folderID interface{}
+	if host.FolderID != "" {
+		folderID = host.FolderID
+	}
+
 	insecureVal := 0
 	if host.InsecureIgnoreHostKey {
 		insecureVal = 1
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE hosts SET name = ?, addr = ?, port = ?, user = ?, users = ?, groups = ?, key_id = ?, insecure_ignore_host_key = ?, updated_at = ? WHERE id = ?",
-		host.Name, host.Addr, host.Port, host.User, string(usersJSON), string(groupsJSON), keyID, insecureVal, host.UpdatedAt, host.ID,
+		"UPDATE hosts SET name = ?, addr = ?, port = ?, user = ?, users = ?, groups = ?, folder_id = ?, key_id = ?, insecure_ignore_host_key = ?, updated_at = ? WHERE id = ?",
+		host.Name, host.Addr, host.Port, host.User, string(usersJSON), string(groupsJSON), folderID, keyID, insecureVal, host.UpdatedAt, host.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update host: %w", err)
@@ -1984,4 +2021,207 @@ func (s *SQLiteStore) GetAllSettings(ctx context.Context) (map[string]string, er
 		settings[key] = value
 	}
 	return settings, rows.Err()
+}
+
+// ============================================================
+// Folder CRUD operations
+// ============================================================
+
+// CreateFolder creates a new folder.
+func (s *SQLiteStore) CreateFolder(ctx context.Context, folder Folder) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	if folder.CreatedAt.IsZero() {
+		folder.CreatedAt = now
+	}
+	folder.UpdatedAt = now
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO folders (id, name, parent_id, path, description, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		folder.ID, folder.Name, folder.ParentID, folder.Path, folder.Description,
+		folder.CreatedAt, folder.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create folder: %w", err)
+	}
+	return nil
+}
+
+// GetFolder retrieves a folder by ID.
+func (s *SQLiteStore) GetFolder(ctx context.Context, id string) (*Folder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var folder Folder
+	var parentID sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, parent_id, path, description, created_at, updated_at
+		 FROM folders WHERE id = ?`, id,
+	).Scan(&folder.ID, &folder.Name, &parentID, &folder.Path, &folder.Description,
+		&folder.CreatedAt, &folder.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get folder: %w", err)
+	}
+	folder.ParentID = parentID.String
+	return &folder, nil
+}
+
+// ListFolders retrieves all folders.
+func (s *SQLiteStore) ListFolders(ctx context.Context) ([]Folder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, parent_id, path, description, created_at, updated_at
+		 FROM folders ORDER BY path`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list folders: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var folders []Folder
+	for rows.Next() {
+		var folder Folder
+		var parentID sql.NullString
+		if err := rows.Scan(&folder.ID, &folder.Name, &parentID, &folder.Path, &folder.Description,
+			&folder.CreatedAt, &folder.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan folder: %w", err)
+		}
+		folder.ParentID = parentID.String
+		folders = append(folders, folder)
+	}
+	return folders, rows.Err()
+}
+
+// ListSubfolders retrieves child folders of a parent folder.
+func (s *SQLiteStore) ListSubfolders(ctx context.Context, parentID string) ([]Folder, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var rows *sql.Rows
+	var err error
+	if parentID == "" {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, name, parent_id, path, description, created_at, updated_at
+			 FROM folders WHERE parent_id IS NULL OR parent_id = '' ORDER BY name`)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, name, parent_id, path, description, created_at, updated_at
+			 FROM folders WHERE parent_id = ? ORDER BY name`, parentID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to list subfolders: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var folders []Folder
+	for rows.Next() {
+		var folder Folder
+		var pid sql.NullString
+		if err := rows.Scan(&folder.ID, &folder.Name, &pid, &folder.Path, &folder.Description,
+			&folder.CreatedAt, &folder.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan folder: %w", err)
+		}
+		folder.ParentID = pid.String
+		folders = append(folders, folder)
+	}
+	return folders, rows.Err()
+}
+
+// UpdateFolder updates a folder.
+func (s *SQLiteStore) UpdateFolder(ctx context.Context, folder Folder) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	folder.UpdatedAt = time.Now()
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE folders SET name = ?, parent_id = ?, path = ?, description = ?, updated_at = ?
+		 WHERE id = ?`,
+		folder.Name, folder.ParentID, folder.Path, folder.Description, folder.UpdatedAt, folder.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update folder: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("folder not found")
+	}
+	return nil
+}
+
+// DeleteFolder deletes a folder and moves its hosts to the root.
+func (s *SQLiteStore) DeleteFolder(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// First move all hosts in this folder to root (no folder)
+	_, err := s.db.ExecContext(ctx, `UPDATE hosts SET folder_id = NULL WHERE folder_id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to update hosts: %w", err)
+	}
+
+	// Move subfolders to parent of deleted folder
+	var parentID sql.NullString
+	_ = s.db.QueryRowContext(ctx, `SELECT parent_id FROM folders WHERE id = ?`, id).Scan(&parentID)
+
+	_, err = s.db.ExecContext(ctx, `UPDATE folders SET parent_id = ? WHERE parent_id = ?`, parentID, id)
+	if err != nil {
+		return fmt.Errorf("failed to update subfolders: %w", err)
+	}
+
+	// Delete the folder
+	result, err := s.db.ExecContext(ctx, `DELETE FROM folders WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete folder: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("folder not found")
+	}
+	return nil
+}
+
+// ListHostsByFolder retrieves hosts in a specific folder.
+func (s *SQLiteStore) ListHostsByFolder(ctx context.Context, folderID string) ([]Host, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var rows *sql.Rows
+	var err error
+	if folderID == "" {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, name, addr, port, user, users, groups, folder_id, key_id, insecure_ignore_host_key, created_at, updated_at
+			 FROM hosts WHERE folder_id IS NULL OR folder_id = '' ORDER BY name`)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, name, addr, port, user, users, groups, folder_id, key_id, insecure_ignore_host_key, created_at, updated_at
+			 FROM hosts WHERE folder_id = ? ORDER BY name`, folderID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to list hosts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var hosts []Host
+	for rows.Next() {
+		var h Host
+		var usersJSON, groupsJSON string
+		var folderID, keyID sql.NullString
+		if err := rows.Scan(&h.ID, &h.Name, &h.Addr, &h.Port, &h.User, &usersJSON, &groupsJSON,
+			&folderID, &keyID, &h.InsecureIgnoreHostKey, &h.CreatedAt, &h.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan host: %w", err)
+		}
+		_ = json.Unmarshal([]byte(usersJSON), &h.Users)
+		_ = json.Unmarshal([]byte(groupsJSON), &h.Groups)
+		h.FolderID = folderID.String
+		h.KeyID = keyID.String
+		hosts = append(hosts, h)
+	}
+	return hosts, rows.Err()
 }

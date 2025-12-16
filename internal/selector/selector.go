@@ -61,6 +61,7 @@ func (s *Selector) getAllHosts() []config.HostConfig {
 					Name:                  h.Name,
 					Addr:                  h.Addr,
 					Port:                  h.Port,
+					User:                  h.User,
 					Users:                 h.Users,
 					Groups:                h.Groups,
 					KeyPath:               h.KeyPath,

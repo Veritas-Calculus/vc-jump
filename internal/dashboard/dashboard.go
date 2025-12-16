@@ -112,6 +112,10 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/logout", s.requireAuth(s.handleLogout))
 	s.mux.HandleFunc("/api/me", s.requireAuth(s.handleMe))
 
+	// Folder management.
+	s.mux.HandleFunc("/api/folders", s.requireAuth(s.handleFolders))
+	s.mux.HandleFunc("/api/folders/", s.requireAuth(s.handleFolder))
+
 	// Host management.
 	s.mux.HandleFunc("/api/hosts", s.requireAuth(s.handleHosts))
 	s.mux.HandleFunc("/api/hosts/", s.requireAuth(s.handleHost))
@@ -508,76 +512,79 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		// Get user requires user:view permission.
-		if !s.hasPermission(r, "user:view") {
-			s.jsonError(w, "permission denied", http.StatusForbidden)
-			return
-		}
-		user, err := s.store.GetUser(r.Context(), id)
-		if err != nil {
-			s.jsonError(w, "user not found", http.StatusNotFound)
-			return
-		}
-		s.jsonResponse(w, user)
-
+		s.getUser(w, r, id)
 	case http.MethodPut:
-		// Update user requires user:update permission.
-		if !s.hasPermission(r, "user:update") {
-			s.jsonError(w, "permission denied", http.StatusForbidden)
-			return
-		}
-		// First get existing user to preserve fields not being updated.
-		existingUser, err := s.store.GetUser(r.Context(), id)
-		if err != nil {
-			s.jsonError(w, "user not found", http.StatusNotFound)
-			return
-		}
-		var req struct {
-			Groups       []string `json:"groups"`
-			AllowedHosts []string `json:"allowed_hosts"`
-			IsActive     *bool    `json:"is_active"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.jsonError(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		// Only update mutable fields, preserve username and other critical fields.
-		existingUser.Groups = req.Groups
-		existingUser.AllowedHosts = req.AllowedHosts
-		if req.IsActive != nil {
-			existingUser.IsActive = *req.IsActive
-		}
-		if err := s.store.UpdateUser(r.Context(), existingUser); err != nil {
-			s.jsonError(w, "failed to update user", http.StatusInternalServerError)
-			return
-		}
-		s.jsonResponse(w, existingUser)
-
+		s.updateUser(w, r, id)
 	case http.MethodDelete:
-		// Delete user requires user:delete permission.
-		if !s.hasPermission(r, "user:delete") {
-			s.jsonError(w, "permission denied", http.StatusForbidden)
-			return
-		}
-		// Prevent deleting admin user.
-		user, err := s.store.GetUser(r.Context(), id)
-		if err != nil {
-			s.jsonError(w, "user not found", http.StatusNotFound)
-			return
-		}
-		if user.Username == "admin" {
-			s.jsonError(w, "cannot delete admin user", http.StatusForbidden)
-			return
-		}
-		if err := s.store.DeleteUser(r.Context(), id); err != nil {
-			s.jsonError(w, "failed to delete user", http.StatusInternalServerError)
-			return
-		}
-		s.jsonResponse(w, map[string]string{"status": "deleted"})
-
+		s.deleteUser(w, r, id)
 	default:
 		s.jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) getUser(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.hasPermission(r, "user:view") {
+		s.jsonError(w, "permission denied", http.StatusForbidden)
+		return
+	}
+	user, err := s.store.GetUser(r.Context(), id)
+	if err != nil {
+		s.jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+	s.jsonResponse(w, user)
+}
+
+func (s *Server) updateUser(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.hasPermission(r, "user:update") {
+		s.jsonError(w, "permission denied", http.StatusForbidden)
+		return
+	}
+	existingUser, err := s.store.GetUser(r.Context(), id)
+	if err != nil {
+		s.jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+	var req struct {
+		Groups       []string `json:"groups"`
+		AllowedHosts []string `json:"allowed_hosts"`
+		IsActive     *bool    `json:"is_active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	existingUser.Groups = req.Groups
+	existingUser.AllowedHosts = req.AllowedHosts
+	if req.IsActive != nil {
+		existingUser.IsActive = *req.IsActive
+	}
+	if err := s.store.UpdateUser(r.Context(), existingUser); err != nil {
+		s.jsonError(w, "failed to update user", http.StatusInternalServerError)
+		return
+	}
+	s.jsonResponse(w, existingUser)
+}
+
+func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request, id string) {
+	if !s.hasPermission(r, "user:delete") {
+		s.jsonError(w, "permission denied", http.StatusForbidden)
+		return
+	}
+	user, err := s.store.GetUser(r.Context(), id)
+	if err != nil {
+		s.jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.Username == "admin" {
+		s.jsonError(w, "cannot delete admin user", http.StatusForbidden)
+		return
+	}
+	if err := s.store.DeleteUser(r.Context(), id); err != nil {
+		s.jsonError(w, "failed to delete user", http.StatusInternalServerError)
+		return
+	}
+	s.jsonResponse(w, map[string]string{"status": "deleted"})
 }
 
 func (s *Server) handleKeys(w http.ResponseWriter, r *http.Request) {
