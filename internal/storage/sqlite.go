@@ -1660,6 +1660,38 @@ func (s *SQLiteStore) GetHostPermissions(ctx context.Context, userID string) ([]
 	return perms, rows.Err()
 }
 
+// ListAllHostPermissions returns all host permissions in the system.
+func (s *SQLiteStore) ListAllHostPermissions(ctx context.Context) ([]HostPermission, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, host_id, can_sudo, expires_at, created_at, updated_at
+		 FROM host_permissions ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list host permissions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var perms []HostPermission
+	for rows.Next() {
+		var perm HostPermission
+		var expiresAt sql.NullTime
+
+		if err := rows.Scan(&perm.ID, &perm.UserID, &perm.HostID, &perm.CanSudo, &expiresAt, &perm.CreatedAt, &perm.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan permission: %w", err)
+		}
+
+		if expiresAt.Valid {
+			perm.ExpiresAt = expiresAt.Time
+		}
+		perms = append(perms, perm)
+	}
+
+	return perms, rows.Err()
+}
+
 // GetHostPermission returns a specific host permission.
 func (s *SQLiteStore) GetHostPermission(ctx context.Context, userID, hostID string) (*HostPermission, error) {
 	s.mu.RLock()
@@ -1734,6 +1766,31 @@ func (s *SQLiteStore) RevokeHostAccess(ctx context.Context, userID, hostID strin
 	)
 	if err != nil {
 		return fmt.Errorf("failed to revoke host access: %w", err)
+	}
+
+	return nil
+}
+
+// RevokeHostAccessByID removes a host permission by its ID.
+func (s *SQLiteStore) RevokeHostAccessByID(ctx context.Context, id string) error {
+	if id == "" {
+		return errors.New("id is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.ExecContext(ctx,
+		"DELETE FROM host_permissions WHERE id = ?",
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to revoke host access: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return errors.New("permission not found")
 	}
 
 	return nil

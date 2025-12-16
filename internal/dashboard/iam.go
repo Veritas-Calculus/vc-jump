@@ -306,7 +306,13 @@ func (s *Server) listHostPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.jsonError(w, "user_id or host_id query parameter required", http.StatusBadRequest)
+	// No filter - return all host permissions.
+	perms, err := s.store.ListAllHostPermissions(r.Context())
+	if err != nil {
+		s.jsonError(w, "failed to list permissions", http.StatusInternalServerError)
+		return
+	}
+	s.jsonResponse(w, perms)
 }
 
 type hostPermissionRequest struct {
@@ -374,20 +380,33 @@ func (s *Server) revokeHostPermission(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 
-	// Path format: userID/hostID.
+	// Path can be either:
+	// - Single ID (e.g., "abc123") - delete by permission ID
+	// - userID/hostID format (e.g., "user1/host1") - delete by user and host
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 {
-		s.jsonError(w, "invalid path format, expected /user_id/host_id", http.StatusBadRequest)
+
+	if len(parts) == 1 && parts[0] != "" {
+		// Delete by permission ID.
+		if err := s.store.RevokeHostAccessByID(r.Context(), parts[0]); err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.jsonResponse(w, map[string]string{"status": "revoked"})
 		return
 	}
 
-	userID, hostID := parts[0], parts[1]
-	if err := s.store.RevokeHostAccess(r.Context(), userID, hostID); err != nil {
-		s.jsonError(w, err.Error(), http.StatusBadRequest)
+	if len(parts) == 2 {
+		// Delete by userID/hostID.
+		userID, hostID := parts[0], parts[1]
+		if err := s.store.RevokeHostAccess(r.Context(), userID, hostID); err != nil {
+			s.jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.jsonResponse(w, map[string]string{"status": "revoked"})
 		return
 	}
 
-	s.jsonResponse(w, map[string]string{"status": "revoked"})
+	s.jsonError(w, "invalid path format", http.StatusBadRequest)
 }
 
 // hasPermission checks if the current user has a specific permission.

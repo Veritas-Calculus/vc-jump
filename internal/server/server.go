@@ -18,6 +18,7 @@ import (
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
 	"github.com/Veritas-Calculus/vc-jump/internal/logger"
 	"github.com/Veritas-Calculus/vc-jump/internal/proxy"
+	"github.com/Veritas-Calculus/vc-jump/internal/rbac"
 	"github.com/Veritas-Calculus/vc-jump/internal/recording"
 	"github.com/Veritas-Calculus/vc-jump/internal/selector"
 	"github.com/Veritas-Calculus/vc-jump/internal/storage"
@@ -361,6 +362,10 @@ func (s *Server) handleSession(sshConn *ssh.ServerConn, channel ssh.Channel, req
 
 	// Get list of accessible hosts for this user.
 	hosts := s.selector.GetAccessibleHosts(username, groups, allowedHosts)
+
+	// Apply RBAC filtering if enabled.
+	hosts = s.filterHostsByRBAC(username, hosts)
+
 	if len(hosts) == 0 {
 		_, _ = io.WriteString(channel, "No accessible hosts found.\r\n")
 		return
@@ -602,6 +607,80 @@ func (s *Server) isAdmin(username string, groups []string) bool {
 		}
 	}
 	return false
+}
+
+// filterHostsByRBAC filters hosts based on RBAC permissions.
+// Admin users (admin role) have access to all hosts.
+// Other users only have access to hosts they have explicit permission for.
+func (s *Server) filterHostsByRBAC(username string, hosts []config.HostConfig) []config.HostConfig {
+	if s.sqliteStore == nil {
+		return hosts // No RBAC if no database.
+	}
+
+	ctx := context.Background()
+
+	// Get user from database.
+	user, err := s.sqliteStore.GetUserByUsername(ctx, username)
+	if err != nil {
+		s.logger.Infof("failed to get user %s: %v", username, err)
+		return nil // No access if user not found.
+	}
+
+	// Check if user has admin role.
+	userRoles, err := s.sqliteStore.GetUserRoles(ctx, user.ID)
+	if err != nil {
+		s.logger.Infof("failed to get roles for user %s: %v", username, err)
+	}
+
+	for _, role := range userRoles {
+		if role.Name == rbac.RoleAdmin {
+			return hosts // Admin has access to all hosts.
+		}
+	}
+
+	// Get all hosts from database to map name -> ID.
+	dbHosts, err := s.sqliteStore.ListHosts(ctx)
+	if err != nil {
+		s.logger.Infof("failed to list hosts: %v", err)
+		return nil
+	}
+
+	hostNameToID := make(map[string]string)
+	for _, h := range dbHosts {
+		hostNameToID[h.Name] = h.ID
+	}
+
+	// Get user's host permissions.
+	hostPerms, err := s.sqliteStore.GetHostPermissions(ctx, user.ID)
+	if err != nil {
+		s.logger.Infof("failed to get host permissions for user %s: %v", username, err)
+		return nil
+	}
+
+	// Build set of permitted host IDs.
+	permittedHostIDs := make(map[string]bool)
+	now := time.Now()
+	for _, perm := range hostPerms {
+		// Check if permission has expired.
+		if !perm.ExpiresAt.IsZero() && perm.ExpiresAt.Before(now) {
+			continue // Skip expired permissions.
+		}
+		permittedHostIDs[perm.HostID] = true
+	}
+
+	// Filter hosts by permissions.
+	var filtered []config.HostConfig
+	for _, host := range hosts {
+		hostID, ok := hostNameToID[host.Name]
+		if !ok {
+			continue // Host not in database.
+		}
+		if permittedHostIDs[hostID] {
+			filtered = append(filtered, host)
+		}
+	}
+
+	return filtered
 }
 
 // runAdminConsole provides an interactive admin interface via SSH.
