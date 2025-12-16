@@ -1141,21 +1141,21 @@ func (s *Server) logAudit(eventType, username, sourceIP, targetHost, action, res
 }
 
 // handleRobotsTxt serves robots.txt to control crawler access.
-func (s *Server) handleRobotsTxt(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRobotsTxt(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	// Disallow all crawlers - this is an internal admin dashboard
 	robotsTxt := `User-agent: *
 Disallow: /
 `
-	w.Write([]byte(robotsTxt))
+	_, _ = w.Write([]byte(robotsTxt))
 }
 
 // handleSitemapXml returns an empty sitemap - internal dashboard doesn't need indexing.
-func (s *Server) handleSitemapXml(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSitemapXml(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	sitemap := `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 </urlset>
 `
-	w.Write([]byte(sitemap))
+	_, _ = w.Write([]byte(sitemap))
 }
