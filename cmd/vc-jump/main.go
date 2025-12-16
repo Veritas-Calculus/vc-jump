@@ -111,6 +111,8 @@ func createDefaultAdminUser(ctx context.Context, cfg *config.Config, store *stor
 
 	users, _ := store.ListUsers(ctx)
 	if len(users) > 0 {
+		// Check if admin user already has admin role assigned.
+		assignAdminRoleIfNeeded(ctx, store, cfg.Dashboard.Username)
 		return
 	}
 
@@ -130,6 +132,38 @@ func createDefaultAdminUser(ctx context.Context, cfg *config.Config, store *stor
 		log.Printf("warning: failed to create admin user: %v", err)
 	} else {
 		log.Printf("created default admin user: %s", cfg.Dashboard.Username)
+		// Assign admin role to the new user.
+		assignAdminRoleIfNeeded(ctx, store, cfg.Dashboard.Username)
+	}
+}
+
+// assignAdminRoleIfNeeded assigns the admin role to a user if not already assigned.
+func assignAdminRoleIfNeeded(ctx context.Context, store *storage.SQLiteStore, username string) {
+	// Get user by username.
+	user, err := store.GetUserByUsername(ctx, username)
+	if err != nil {
+		return
+	}
+
+	// Get admin role.
+	adminRole, err := store.GetRoleByName(ctx, "admin")
+	if err != nil {
+		return
+	}
+
+	// Check if user already has admin role.
+	userRoles, _ := store.GetUserRoles(ctx, user.ID)
+	for _, r := range userRoles {
+		if r.Name == "admin" {
+			return // Already has admin role.
+		}
+	}
+
+	// Assign admin role.
+	if err := store.AssignRole(ctx, user.ID, adminRole.ID); err != nil {
+		log.Printf("warning: failed to assign admin role to %s: %v", username, err)
+	} else {
+		log.Printf("assigned admin role to user: %s", username)
 	}
 }
 
