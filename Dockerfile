@@ -15,10 +15,12 @@ COPY . .
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /vc-jump ./cmd/vc-jump
 
-# Final stage
-FROM alpine:3.20
+# Final stage - use Alpine edge to get latest busybox with CVE fixes
+FROM alpine:3.23
 
-RUN apk add --no-cache ca-certificates tzdata
+# Upgrade all packages including busybox to get security fixes
+RUN apk add --no-cache ca-certificates tzdata && \
+    apk upgrade --no-cache
 
 # Create non-root user
 RUN addgroup -g 1000 vcjump && \
