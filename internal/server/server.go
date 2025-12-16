@@ -236,6 +236,30 @@ func (s *Server) createSSHConfig() (*ssh.ServerConfig, error) {
 	sshConfig := &ssh.ServerConfig{
 		PasswordCallback:  s.passwordCallback,
 		PublicKeyCallback: s.publicKeyCallback,
+		// SSH hardening: configure secure algorithms
+		Config: ssh.Config{
+			// Key exchange algorithms - exclude NIST curves and SHA-1 based algorithms
+			KeyExchanges: []string{
+				"curve25519-sha256",
+				"curve25519-sha256@libssh.org",
+				// Post-quantum hybrid (OpenSSH 9.9+)
+				// "mlkem768x25519-sha256", // Uncomment when Go crypto/ssh supports it
+			},
+			// Ciphers - use only authenticated encryption modes
+			Ciphers: []string{
+				"chacha20-poly1305@openssh.com",
+				"aes256-gcm@openssh.com",
+				"aes128-gcm@openssh.com",
+				"aes256-ctr",
+				"aes192-ctr",
+				"aes128-ctr",
+			},
+			// MACs - use only ETM (Encrypt-then-MAC) modes, avoid SHA-1
+			MACs: []string{
+				"hmac-sha2-256-etm@openssh.com",
+				"hmac-sha2-512-etm@openssh.com",
+			},
+		},
 	}
 
 	hostKey, err := s.loadOrGenerateHostKey()
