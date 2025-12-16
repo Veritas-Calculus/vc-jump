@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
+	"github.com/Veritas-Calculus/vc-jump/internal/rbac"
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -219,6 +221,50 @@ func (s *SQLiteStore) runMigrations() error {
 		// Ignore error if column already exists.
 		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
 			return err
+		}
+	}
+
+	// Initialize default RBAC roles if they don't exist.
+	if err := s.initDefaultRoles(); err != nil {
+		return fmt.Errorf("failed to initialize default roles: %w", err)
+	}
+
+	return nil
+}
+
+// initDefaultRoles creates the default system roles if they don't exist.
+func (s *SQLiteStore) initDefaultRoles() error {
+	defaultRoles := rbac.DefaultRoles()
+
+	for _, role := range defaultRoles {
+		// Check if role already exists by name.
+		var count int
+		err := s.db.QueryRow("SELECT COUNT(*) FROM roles WHERE name = ?", role.Name).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("failed to check role existence: %w", err)
+		}
+
+		if count > 0 {
+			// Role already exists, skip.
+			continue
+		}
+
+		// Create the role.
+		permsJSON, err := json.Marshal(role.Permissions)
+		if err != nil {
+			return fmt.Errorf("failed to marshal permissions: %w", err)
+		}
+
+		roleID := uuid.New().String()
+		now := time.Now()
+
+		_, err = s.db.Exec(
+			`INSERT INTO roles (id, name, display_name, description, permissions, is_system, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			roleID, role.Name, role.DisplayName, role.Description, string(permsJSON), role.IsSystem, now, now,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create role %s: %w", role.Name, err)
 		}
 	}
 
@@ -1815,4 +1861,3 @@ func (s *SQLiteStore) InitDefaultRoles(ctx context.Context) error {
 
 	return nil
 }
-

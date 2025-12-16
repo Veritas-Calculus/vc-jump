@@ -801,4 +801,3 @@ func TestCacheExpiration(t *testing.T) {
 		t.Error("expected refreshed permissions from store after cache expiration")
 	}
 }
-
