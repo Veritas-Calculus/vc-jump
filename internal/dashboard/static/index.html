@@ -33,6 +33,17 @@
         nav h1 { font-size: 14px; font-weight: normal; }
         .logout-btn { background: #c00; color: #fff; border: none; padding: 5px 10px; cursor: pointer; font-family: monospace; font-size: 12px; }
         
+        /* User dropdown menu */
+        .user-dropdown { position: relative; display: inline-block; }
+        .user-dropdown-btn { background: #555; color: #fff; border: none; padding: 5px 12px; cursor: pointer; font-family: monospace; font-size: 12px; border-radius: 3px; }
+        .user-dropdown-btn:hover { background: #666; }
+        .user-dropdown-content { display: none; position: absolute; right: 0; top: 100%; background: #fff; min-width: 150px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); z-index: 1000; border-radius: 3px; overflow: hidden; }
+        .user-dropdown-content a { color: #333; padding: 10px 15px; text-decoration: none; display: block; font-size: 12px; border-bottom: 1px solid #eee; }
+        .user-dropdown-content a:hover { background: #f5f5f5; }
+        .user-dropdown-content a:last-child { border-bottom: none; }
+        .user-dropdown-content a.logout-item { color: #c00; }
+        .user-dropdown.open .user-dropdown-content { display: block; }
+        
         .main-content { display: flex; min-height: calc(100vh - 40px); }
         .sidebar { width: 150px; background: #f5f5f5; border-right: 1px solid #ccc; }
         .sidebar ul { list-style: none; }
@@ -98,8 +109,16 @@
 
     <div class="dashboard" id="dashboard">
         <nav>
-            <h1>VC Jump - <span id="currentUser"></span></h1>
-            <button class="logout-btn" onclick="logout()">Logout</button>
+            <h1>VC Jump</h1>
+            <div class="user-dropdown" id="userDropdown">
+                <button class="user-dropdown-btn" onclick="toggleUserDropdown()">
+                    <span id="currentUser">user</span> ▼
+                </button>
+                <div class="user-dropdown-content">
+                    <a href="#" onclick="openOTPSettingsModal(); return false;">🔐 OTP Settings</a>
+                    <a href="#" class="logout-item" onclick="logout(); return false;">🚪 Logout</a>
+                </div>
+            </div>
         </nav>
         <div class="main-content">
             <div class="sidebar">
@@ -285,6 +304,19 @@
                            style="flex:1;cursor:pointer" onchange="seekTo(this.value)" oninput="seekPreview(this.value)">
                     <span id="totalTime">0:00</span>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- OTP Settings Modal -->
+    <div class="modal" id="otpSettingsModal">
+        <div class="modal-content" style="max-width:400px">
+            <h3>🔐 OTP Settings</h3>
+            <div id="otp-modal-content" style="padding:15px 0">
+                <div id="otp-modal-status">Loading...</div>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn-sm" onclick="closeModal('otpSettingsModal')">Close</button>
             </div>
         </div>
     </div>
@@ -580,6 +612,111 @@
             await fetch('/api/logout', { method: 'POST', headers: { 'Authorization': 'Bearer ' + token } });
             localStorage.removeItem('token');
             location.reload();
+        }
+
+        // User dropdown menu
+        function toggleUserDropdown() {
+            document.getElementById('userDropdown').classList.toggle('open');
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const dropdown = document.getElementById('userDropdown');
+            if (dropdown && !dropdown.contains(e.target)) {
+                dropdown.classList.remove('open');
+            }
+        });
+
+        // OTP Settings Modal
+        async function openOTPSettingsModal() {
+            document.getElementById('userDropdown').classList.remove('open');
+            showModal('otpSettingsModal');
+            await loadOTPModalStatus();
+        }
+
+        async function loadOTPModalStatus() {
+            try {
+                const status = await (await fetch('/api/otp/status', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                const container = document.getElementById('otp-modal-status');
+                if (status.enabled) {
+                    container.innerHTML = `
+                        <div style="color:#090;font-weight:bold;margin-bottom:15px">✓ OTP is enabled for your account</div>
+                        <p style="font-size:12px;color:#666;margin-bottom:15px">You will be prompted for OTP code when connecting via SSH.</p>
+                        <button class="btn-sm btn-del" onclick="disableOTPFromModal()">Disable OTP</button>
+                    `;
+                } else {
+                    const forceMsg = status.force_enabled ? '<p style="color:#c00;font-size:12px;margin-bottom:10px">⚠ OTP is required by your administrator.</p>' : '';
+                    container.innerHTML = `
+                        ${forceMsg}
+                        <div style="margin-bottom:15px">OTP is not enabled for your account.</div>
+                        <button class="btn-sm btn-add" onclick="setupOTPFromModal()">Enable OTP</button>
+                    `;
+                }
+            } catch (e) {
+                document.getElementById('otp-modal-status').innerHTML = '<div style="color:#c00">Failed to load OTP status</div>';
+            }
+        }
+
+        async function setupOTPFromModal() {
+            try {
+                const resp = await fetch('/api/otp/setup', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const data = await resp.json();
+                if (data.qr_code) {
+                    document.getElementById('otp-modal-status').innerHTML = `
+                        <div style="text-align:center">
+                            <p style="margin-bottom:10px">Scan this QR code with your authenticator app:</p>
+                            <img src="data:image/png;base64,${data.qr_code}" style="max-width:200px;border:1px solid #ccc;padding:10px;background:#fff">
+                            <p style="font-size:11px;color:#666;margin-top:10px">Or enter manually: <code style="background:#f5f5f5;padding:2px 5px">${data.secret || 'See authenticator app'}</code></p>
+                            <div style="margin-top:15px">
+                                <input type="text" id="otpVerifyCode" placeholder="Enter 6-digit code" maxlength="6" style="width:120px;text-align:center;font-size:16px;padding:8px">
+                                <button class="btn-sm btn-add" onclick="verifyOTPFromModal()" style="margin-left:10px">Verify</button>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (e) {
+                alert('Failed to setup OTP: ' + e.message);
+            }
+        }
+
+        async function verifyOTPFromModal() {
+            const code = document.getElementById('otpVerifyCode').value;
+            if (!code || code.length !== 6) {
+                alert('Please enter a 6-digit code');
+                return;
+            }
+            try {
+                const resp = await fetch('/api/otp/verify', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: code })
+                });
+                if (resp.ok) {
+                    alert('OTP enabled successfully!');
+                    await loadOTPModalStatus();
+                } else {
+                    const err = await resp.json();
+                    alert('Verification failed: ' + (err.error || 'Invalid code'));
+                }
+            } catch (e) {
+                alert('Verification failed: ' + e.message);
+            }
+        }
+
+        async function disableOTPFromModal() {
+            if (!confirm('Are you sure you want to disable OTP?')) return;
+            try {
+                await fetch('/api/otp/disable', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                await loadOTPModalStatus();
+            } catch (e) {
+                alert('Failed to disable OTP: ' + e.message);
+            }
         }
 
         // ============================================================

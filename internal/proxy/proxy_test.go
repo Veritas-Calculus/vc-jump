@@ -18,7 +18,8 @@ func TestGetUserForHostWithUsers(t *testing.T) {
 		Name:  "test",
 		Addr:  "10.0.0.1",
 		Port:  22,
-		Users: []string{"admin", "root"},
+		User:  "admin",
+		Users: []string{"user1", "user2"}, // Users is for access control, not SSH login
 	}
 
 	user := getUserForHost(host)

@@ -4,7 +4,6 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/Veritas-Calculus/vc-jump/internal/otp"
 )
@@ -12,8 +11,8 @@ import (
 // OTP API request/response types.
 
 type otpSetupResponse struct {
-	Secret    string `json:"secret"`
-	QRCode    string `json:"qr_code"` // Base64 encoded PNG.
+	Secret     string `json:"secret"`
+	QRCode     string `json:"qr_code"` // Base64 encoded PNG.
 	OTPAuthURL string `json:"otpauth_url"`
 }
 
@@ -229,34 +228,4 @@ func (s *Server) updateOTPSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonResponse(w, map[string]string{"status": "updated"})
-}
-
-// handleAdminOTPReset resets OTP for a specific user (admin only).
-// DELETE /api/users/:id/otp
-func (s *Server) handleAdminOTPReset(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		s.jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	if !s.hasPermission(r, "user:update") {
-		s.jsonError(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	// Extract user ID from path.
-	path := strings.TrimPrefix(r.URL.Path, "/api/users/")
-	parts := strings.Split(path, "/")
-	if len(parts) != 2 || parts[1] != "otp" {
-		s.jsonError(w, "invalid path", http.StatusBadRequest)
-		return
-	}
-
-	userID := parts[0]
-	if err := s.store.DisableUserOTP(r.Context(), userID); err != nil {
-		s.jsonError(w, "failed to reset OTP", http.StatusInternalServerError)
-		return
-	}
-
-	s.jsonResponse(w, map[string]string{"status": "reset"})
 }

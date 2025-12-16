@@ -445,24 +445,3 @@ func (s *Server) hasPermission(r *http.Request, permission string) bool {
 
 	return false
 }
-
-// isAdmin checks if the current user has admin role.
-func (s *Server) isAdmin(r *http.Request) bool {
-	userID, ok := r.Context().Value(contextKeyUserID).(string)
-	if !ok || userID == "" {
-		return false
-	}
-
-	roles, err := s.store.GetUserRoles(r.Context(), userID)
-	if err != nil {
-		return false
-	}
-
-	for _, role := range roles {
-		if role.Name == "admin" {
-			return true
-		}
-	}
-
-	return false
-}
