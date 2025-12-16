@@ -76,20 +76,21 @@ func (s *Selector) getAllHosts() []config.HostConfig {
 
 func (s *Selector) canAccess(host config.HostConfig, username string, groups []string, allowedHosts []string) bool {
 	// If user has allowed_hosts restriction, check it first.
+	// If allowedHosts is set and the host is in the list, allow access immediately.
+	// If allowedHosts is set but the host is NOT in the list, deny access.
 	if len(allowedHosts) > 0 {
-		allowed := false
 		for _, h := range allowedHosts {
 			if h == host.Name || h == "*" {
-				allowed = true
-				break
+				// User explicitly allowed to access this host.
+				return true
 			}
 		}
-		if !allowed {
-			return false
-		}
+		// Host not in user's allowed list.
+		return false
 	}
 
-	// If no users or groups are specified, allow access to all.
+	// If no allowed_hosts restriction on user, check host-level restrictions.
+	// If no users or groups are specified on host, allow access to all.
 	if len(host.Users) == 0 && len(host.Groups) == 0 {
 		return true
 	}

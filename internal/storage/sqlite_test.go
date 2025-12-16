@@ -498,51 +498,6 @@ func TestSQLiteStore_UserWithPassword(t *testing.T) {
 	}
 }
 
-func TestSQLiteStore_GetOrCreateUser(t *testing.T) {
-	store := createTestStore(t)
-	defer store.Close()
-	ctx := context.Background()
-
-	// Test creating a new SSH user.
-	user1, err := store.GetOrCreateUser(ctx, "sshuser", UserSourceSSH, "ssh-rsa AAAA...")
-	if err != nil {
-		t.Fatalf("failed to get or create user: %v", err)
-	}
-	if user1.Username != "sshuser" {
-		t.Errorf("expected username sshuser, got %s", user1.Username)
-	}
-	if user1.Source != UserSourceSSH {
-		t.Errorf("expected source %s, got %s", UserSourceSSH, user1.Source)
-	}
-	if len(user1.Groups) != 1 || user1.Groups[0] != "users" {
-		t.Errorf("expected groups [users], got %v", user1.Groups)
-	}
-
-	// Test getting existing user.
-	user2, err := store.GetOrCreateUser(ctx, "sshuser", UserSourceSSH, "ssh-rsa BBBB...")
-	if err != nil {
-		t.Fatalf("failed to get existing user: %v", err)
-	}
-	if user2.ID != user1.ID {
-		t.Error("expected same user ID for existing user")
-	}
-
-	// Test creating OIDC user.
-	oidcUser, err := store.GetOrCreateUser(ctx, "oidcuser", UserSourceOIDC, "")
-	if err != nil {
-		t.Fatalf("failed to create OIDC user: %v", err)
-	}
-	if oidcUser.Source != UserSourceOIDC {
-		t.Errorf("expected source %s, got %s", UserSourceOIDC, oidcUser.Source)
-	}
-
-	// Verify users in list.
-	users, _ := store.ListUsers(ctx)
-	if len(users) != 2 {
-		t.Errorf("expected 2 users, got %d", len(users))
-	}
-}
-
 func TestSQLiteStore_UserAllowedHosts(t *testing.T) {
 	store := createTestStore(t)
 	defer store.Close()

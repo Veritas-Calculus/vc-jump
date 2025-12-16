@@ -89,6 +89,8 @@ func (s *SQLiteStore) initSchema() error {
 		allowed_hosts TEXT DEFAULT '[]',
 		source TEXT DEFAULT 'local',
 		totp_secret TEXT,
+		otp_enabled INTEGER DEFAULT 0,
+		otp_verified INTEGER DEFAULT 0,
 		is_active INTEGER DEFAULT 1,
 		last_login_at DATETIME,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -188,6 +190,12 @@ func (s *SQLiteStore) initSchema() error {
 		UNIQUE(user_id, host_id)
 	);
 
+	CREATE TABLE IF NOT EXISTS settings (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_roles_name ON roles(name);
 	CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);
 	CREATE INDEX IF NOT EXISTS idx_user_roles_role_id ON user_roles(role_id);
@@ -219,6 +227,22 @@ func (s *SQLiteStore) runMigrations() error {
 	_, err = s.db.Exec("ALTER TABLE hosts ADD COLUMN insecure_ignore_host_key INTEGER DEFAULT 0")
 	if err != nil {
 		// Ignore error if column already exists.
+		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+
+	// Add 'otp_enabled' column to users if it doesn't exist.
+	_, err = s.db.Exec("ALTER TABLE users ADD COLUMN otp_enabled INTEGER DEFAULT 0")
+	if err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+
+	// Add 'otp_verified' column to users if it doesn't exist.
+	_, err = s.db.Exec("ALTER TABLE users ADD COLUMN otp_verified INTEGER DEFAULT 0")
+	if err != nil {
 		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
 			return err
 		}
@@ -508,12 +532,12 @@ func (s *SQLiteStore) GetUser(ctx context.Context, id string) (*User, error) {
 
 	var user User
 	var groupsJSON, publicKeysJSON string
-	var allowedHostsJSON, passwordHash, source sql.NullString
+	var allowedHostsJSON, passwordHash, source, otpSecret sql.NullString
 	var lastLoginAt sql.NullTime
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, username, password_hash, groups, public_keys, allowed_hosts, source, is_active, last_login_at, created_at, updated_at FROM users WHERE id = ?",
+		"SELECT id, username, password_hash, groups, public_keys, allowed_hosts, source, totp_secret, otp_enabled, otp_verified, is_active, last_login_at, created_at, updated_at FROM users WHERE id = ?",
 		id,
-	).Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &allowedHostsJSON, &source, &user.IsActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &allowedHostsJSON, &source, &otpSecret, &user.OTPEnabled, &user.OTPVerified, &user.IsActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, errors.New("user not found")
@@ -527,6 +551,9 @@ func (s *SQLiteStore) GetUser(ctx context.Context, id string) (*User, error) {
 	}
 	if source.Valid {
 		user.Source = UserSource(source.String)
+	}
+	if otpSecret.Valid {
+		user.OTPSecret = otpSecret.String
 	}
 	if lastLoginAt.Valid {
 		user.LastLoginAt = lastLoginAt.Time
@@ -553,12 +580,12 @@ func (s *SQLiteStore) GetUserByUsername(ctx context.Context, username string) (*
 
 	var user User
 	var groupsJSON, publicKeysJSON string
-	var allowedHostsJSON, passwordHash, source sql.NullString
+	var allowedHostsJSON, passwordHash, source, otpSecret sql.NullString
 	var lastLoginAt sql.NullTime
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, username, password_hash, groups, public_keys, allowed_hosts, source, is_active, last_login_at, created_at, updated_at FROM users WHERE username = ?",
+		"SELECT id, username, password_hash, groups, public_keys, allowed_hosts, source, totp_secret, otp_enabled, otp_verified, is_active, last_login_at, created_at, updated_at FROM users WHERE username = ?",
 		username,
-	).Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &allowedHostsJSON, &source, &user.IsActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &allowedHostsJSON, &source, &otpSecret, &user.OTPEnabled, &user.OTPVerified, &user.IsActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, errors.New("user not found")
@@ -572,6 +599,9 @@ func (s *SQLiteStore) GetUserByUsername(ctx context.Context, username string) (*
 	}
 	if source.Valid {
 		user.Source = UserSource(source.String)
+	}
+	if otpSecret.Valid {
+		user.OTPSecret = otpSecret.String
 	}
 	if lastLoginAt.Valid {
 		user.LastLoginAt = lastLoginAt.Time
@@ -597,7 +627,7 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 	defer s.mu.RUnlock()
 
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT id, username, password_hash, groups, public_keys, allowed_hosts, source, is_active, last_login_at, created_at, updated_at FROM users ORDER BY username",
+		"SELECT id, username, password_hash, groups, public_keys, allowed_hosts, source, totp_secret, otp_enabled, otp_verified, is_active, last_login_at, created_at, updated_at FROM users ORDER BY username",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list users: %w", err)
@@ -608,9 +638,9 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 	for rows.Next() {
 		var user User
 		var groupsJSON, publicKeysJSON string
-		var allowedHostsJSON, passwordHash, source sql.NullString
+		var allowedHostsJSON, passwordHash, source, otpSecret sql.NullString
 		var lastLoginAt sql.NullTime
-		if err := rows.Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &allowedHostsJSON, &source, &user.IsActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &allowedHostsJSON, &source, &otpSecret, &user.OTPEnabled, &user.OTPVerified, &user.IsActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan user: %w", err)
 		}
 
@@ -619,6 +649,9 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 		}
 		if source.Valid {
 			user.Source = UserSource(source.String)
+		}
+		if otpSecret.Valid {
+			user.OTPSecret = otpSecret.String
 		}
 		if lastLoginAt.Valid {
 			user.LastLoginAt = lastLoginAt.Time
@@ -668,48 +701,6 @@ func (s *SQLiteStore) CreateUser(ctx context.Context, user *User) error {
 	}
 
 	return nil
-}
-
-// GetOrCreateUser retrieves a user by username, creating them if they don't exist.
-// Used for SSH/OIDC authentication where users are created on first login.
-func (s *SQLiteStore) GetOrCreateUser(ctx context.Context, username string, source UserSource, publicKey string) (*User, error) {
-	// Try to get existing user first.
-	user, err := s.GetUserByUsername(ctx, username)
-	if err == nil {
-		// User exists, update public key if provided and not already stored.
-		if publicKey != "" {
-			keyExists := false
-			for _, k := range user.PublicKeys {
-				if k == publicKey {
-					keyExists = true
-					break
-				}
-			}
-			if !keyExists {
-				user.PublicKeys = append(user.PublicKeys, publicKey)
-				_ = s.UpdateUser(ctx, user)
-			}
-		}
-		return user, nil
-	}
-
-	// User doesn't exist, create new one.
-	newUser := &User{
-		Username:   username,
-		Groups:     []string{"users"},
-		Source:     source,
-		IsActive:   true,
-		PublicKeys: []string{},
-	}
-	if publicKey != "" {
-		newUser.PublicKeys = []string{publicKey}
-	}
-
-	if err := s.CreateUser(ctx, newUser); err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
-	}
-
-	return newUser, nil
 }
 
 // UpdateUser updates an existing user.
@@ -1115,14 +1106,14 @@ func (s *SQLiteStore) GetUserWithPassword(ctx context.Context, username string) 
 	defer s.mu.RUnlock()
 
 	var user UserWithPassword
-	var groupsJSON, publicKeysJSON string
+	var groupsJSON, publicKeysJSON, allowedHostsJSON string
 	var passwordHash, totpSecret sql.NullString
 	var lastLoginAt sql.NullTime
 	var isActive int
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, username, password_hash, groups, public_keys, totp_secret, is_active, last_login_at, created_at, updated_at FROM users WHERE username = ?",
+		"SELECT id, username, password_hash, groups, public_keys, allowed_hosts, totp_secret, is_active, last_login_at, created_at, updated_at FROM users WHERE username = ?",
 		username,
-	).Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &totpSecret, &isActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &allowedHostsJSON, &totpSecret, &isActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, errors.New("user not found")
@@ -1147,6 +1138,9 @@ func (s *SQLiteStore) GetUserWithPassword(ctx context.Context, username string) 
 	if err := json.Unmarshal([]byte(publicKeysJSON), &user.PublicKeys); err != nil {
 		user.PublicKeys = nil
 	}
+	if err := json.Unmarshal([]byte(allowedHostsJSON), &user.AllowedHosts); err != nil {
+		user.AllowedHosts = nil
+	}
 
 	return &user, nil
 }
@@ -1159,11 +1153,15 @@ func (s *SQLiteStore) CreateUserWithPassword(ctx context.Context, user *UserWith
 	if user.ID == "" {
 		user.ID = generateID()
 	}
+	if user.Source == "" {
+		user.Source = UserSourceLocal
+	}
 	user.CreatedAt = time.Now()
 	user.UpdatedAt = time.Now()
 
 	groupsJSON, _ := json.Marshal(user.Groups)
 	publicKeysJSON, _ := json.Marshal(user.PublicKeys)
+	allowedHostsJSON, _ := json.Marshal(user.AllowedHosts)
 
 	var passwordHash, totpSecret interface{}
 	if user.PasswordHash != "" {
@@ -1179,8 +1177,8 @@ func (s *SQLiteStore) CreateUserWithPassword(ctx context.Context, user *UserWith
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO users (id, username, password_hash, groups, public_keys, totp_secret, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		user.ID, user.Username, passwordHash, string(groupsJSON), string(publicKeysJSON), totpSecret, isActive, user.CreatedAt, user.UpdatedAt,
+		"INSERT INTO users (id, username, password_hash, groups, public_keys, allowed_hosts, source, totp_secret, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		user.ID, user.Username, passwordHash, string(groupsJSON), string(publicKeysJSON), string(allowedHostsJSON), string(user.Source), totpSecret, isActive, user.CreatedAt, user.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create user: %w", err)
@@ -1917,4 +1915,73 @@ func (s *SQLiteStore) InitDefaultRoles(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// OTP-related methods.
+
+// SetUserOTPSecret sets the OTP secret for a user.
+func (s *SQLiteStore) SetUserOTPSecret(ctx context.Context, userID, secret string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE users SET totp_secret = ?, updated_at = ? WHERE id = ?",
+		secret, time.Now(), userID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set OTP secret: %w", err)
+	}
+	return nil
+}
+
+// EnableUserOTP enables OTP for a user (marks as verified).
+func (s *SQLiteStore) EnableUserOTP(ctx context.Context, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE users SET otp_enabled = 1, otp_verified = 1, updated_at = ? WHERE id = ?",
+		time.Now(), userID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to enable OTP: %w", err)
+	}
+	return nil
+}
+
+// DisableUserOTP disables OTP for a user and clears the secret.
+func (s *SQLiteStore) DisableUserOTP(ctx context.Context, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE users SET otp_enabled = 0, otp_verified = 0, totp_secret = NULL, updated_at = ? WHERE id = ?",
+		time.Now(), userID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to disable OTP: %w", err)
+	}
+	return nil
+}
+
+// GetAllSettings retrieves all settings.
+func (s *SQLiteStore) GetAllSettings(ctx context.Context) (map[string]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx, "SELECT key, value FROM settings")
+	if err != nil {
+		return nil, fmt.Errorf("failed to list settings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	settings := make(map[string]string)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("failed to scan setting: %w", err)
+		}
+		settings[key] = value
+	}
+	return settings, rows.Err()
 }

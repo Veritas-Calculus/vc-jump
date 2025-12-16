@@ -148,6 +148,15 @@ func (s *Server) setupRoutes() {
 	// IAM - Permissions list.
 	s.mux.HandleFunc("/api/iam/permissions", s.requireAuth(s.handlePermissionsList))
 
+	// OTP management.
+	s.mux.HandleFunc("/api/otp/status", s.requireAuth(s.handleOTPStatus))
+	s.mux.HandleFunc("/api/otp/setup", s.requireAuth(s.handleOTPSetup))
+	s.mux.HandleFunc("/api/otp/verify", s.requireAuth(s.handleOTPVerify))
+	s.mux.HandleFunc("/api/otp", s.requireAuth(s.handleOTPDisable))
+
+	// Settings.
+	s.mux.HandleFunc("/api/settings/otp", s.requireAuth(s.handleOTPSettings))
+
 	// Dashboard stats.
 	s.mux.HandleFunc("/api/stats", s.requireAuth(s.handleStats))
 
@@ -299,10 +308,32 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get user's roles and permissions.
+	roles, err := s.store.GetUserRoles(r.Context(), userID)
+	if err != nil {
+		roles = nil
+	}
+
+	// Collect all permissions from all roles.
+	permSet := make(map[string]bool)
+	var roleNames []string
+	for _, role := range roles {
+		roleNames = append(roleNames, role.Name)
+		for _, perm := range role.Permissions {
+			permSet[perm] = true
+		}
+	}
+	var permissions []string
+	for perm := range permSet {
+		permissions = append(permissions, perm)
+	}
+
 	s.jsonResponse(w, map[string]interface{}{
-		"id":       user.ID,
-		"username": user.Username,
-		"groups":   user.Groups,
+		"id":          user.ID,
+		"username":    user.Username,
+		"groups":      user.Groups,
+		"roles":       roleNames,
+		"permissions": permissions,
 	})
 }
 
@@ -377,18 +408,50 @@ func (s *Server) handleHost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		// List users requires user:view permission.
+		if !s.hasPermission(r, "user:view") {
+			s.jsonError(w, "permission denied", http.StatusForbidden)
+			return
+		}
 		users, err := s.store.ListUsers(r.Context())
 		if err != nil {
 			s.jsonError(w, "failed to list users", http.StatusInternalServerError)
 			return
 		}
-		s.jsonResponse(w, users)
+		// Enrich users with their roles
+		var usersWithRoles []map[string]interface{}
+		for _, u := range users {
+			roles, _ := s.store.GetUserRoles(r.Context(), u.ID)
+			var roleNames []string
+			for _, role := range roles {
+				roleNames = append(roleNames, role.Name)
+			}
+			usersWithRoles = append(usersWithRoles, map[string]interface{}{
+				"id":            u.ID,
+				"username":      u.Username,
+				"groups":        u.Groups,
+				"allowed_hosts": u.AllowedHosts,
+				"source":        u.Source,
+				"is_active":     u.IsActive,
+				"last_login_at": u.LastLoginAt,
+				"created_at":    u.CreatedAt,
+				"roles":         roleNames,
+			})
+		}
+		s.jsonResponse(w, usersWithRoles)
 
 	case http.MethodPost:
+		// Create user requires user:create permission.
+		if !s.hasPermission(r, "user:create") {
+			s.jsonError(w, "permission denied", http.StatusForbidden)
+			return
+		}
 		var req struct {
-			Username string   `json:"username"`
-			Password string   `json:"password"`
-			Groups   []string `json:"groups"`
+			Username     string   `json:"username"`
+			Password     string   `json:"password"`
+			Groups       []string `json:"groups"`
+			AllowedHosts []string `json:"allowed_hosts"`
+			RoleID       string   `json:"role_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -403,8 +466,9 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 
 		user := &storage.UserWithPassword{
 			User: storage.User{
-				Username: req.Username,
-				Groups:   req.Groups,
+				Username:     req.Username,
+				Groups:       req.Groups,
+				AllowedHosts: req.AllowedHosts,
 			},
 			PasswordHash: passwordHash,
 			IsActive:     true,
@@ -414,6 +478,20 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "failed to create user", http.StatusInternalServerError)
 			return
 		}
+
+		// Assign role to user. Default to "user" role if not specified.
+		roleID := req.RoleID
+		if roleID == "" {
+			// Get default "user" role.
+			userRole, err := s.store.GetRoleByName(r.Context(), "user")
+			if err == nil {
+				roleID = userRole.ID
+			}
+		}
+		if roleID != "" {
+			_ = s.store.AssignRole(r.Context(), user.ID, roleID)
+		}
+
 		s.jsonResponse(w, user.User)
 
 	default:
@@ -430,6 +508,11 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
+		// Get user requires user:view permission.
+		if !s.hasPermission(r, "user:view") {
+			s.jsonError(w, "permission denied", http.StatusForbidden)
+			return
+		}
 		user, err := s.store.GetUser(r.Context(), id)
 		if err != nil {
 			s.jsonError(w, "user not found", http.StatusNotFound)
@@ -438,19 +521,44 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		s.jsonResponse(w, user)
 
 	case http.MethodPut:
-		var user storage.User
-		if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		// Update user requires user:update permission.
+		if !s.hasPermission(r, "user:update") {
+			s.jsonError(w, "permission denied", http.StatusForbidden)
+			return
+		}
+		// First get existing user to preserve fields not being updated.
+		existingUser, err := s.store.GetUser(r.Context(), id)
+		if err != nil {
+			s.jsonError(w, "user not found", http.StatusNotFound)
+			return
+		}
+		var req struct {
+			Groups       []string `json:"groups"`
+			AllowedHosts []string `json:"allowed_hosts"`
+			IsActive     *bool    `json:"is_active"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.jsonError(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		user.ID = id
-		if err := s.store.UpdateUser(r.Context(), &user); err != nil {
+		// Only update mutable fields, preserve username and other critical fields.
+		existingUser.Groups = req.Groups
+		existingUser.AllowedHosts = req.AllowedHosts
+		if req.IsActive != nil {
+			existingUser.IsActive = *req.IsActive
+		}
+		if err := s.store.UpdateUser(r.Context(), existingUser); err != nil {
 			s.jsonError(w, "failed to update user", http.StatusInternalServerError)
 			return
 		}
-		s.jsonResponse(w, user)
+		s.jsonResponse(w, existingUser)
 
 	case http.MethodDelete:
+		// Delete user requires user:delete permission.
+		if !s.hasPermission(r, "user:delete") {
+			s.jsonError(w, "permission denied", http.StatusForbidden)
+			return
+		}
 		// Prevent deleting admin user.
 		user, err := s.store.GetUser(r.Context(), id)
 		if err != nil {
@@ -569,6 +677,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Session history requires session:view permission.
+	if !s.hasPermission(r, "session:view") {
+		s.jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	limit := 100
 	sessions, err := s.store.ListSessions(r.Context(), "", limit)
 	if err != nil {
@@ -612,6 +726,12 @@ func (s *Server) handleActiveSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Active sessions list requires session:view permission.
+	if !s.hasPermission(r, "session:view") {
+		s.jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Get active sessions directly using the optimized method.
 	activeSessions, err := s.store.ListActiveSessions(r.Context())
 	if err != nil {
@@ -627,6 +747,8 @@ func (s *Server) handleActiveSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLiveSessions returns list of live recording sessions that can be watched.
+// Users with session:view permission can see all sessions.
+// Users without session:view permission can only see their own sessions.
 func (s *Server) handleLiveSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -642,7 +764,31 @@ func (s *Server) handleLiveSessions(w http.ResponseWriter, r *http.Request) {
 	if sessions == nil {
 		sessions = []ActiveSessionInfo{}
 	}
-	s.jsonResponse(w, sessions)
+
+	// If user has session:view permission, return all sessions.
+	if s.hasPermission(r, "session:view") {
+		s.jsonResponse(w, sessions)
+		return
+	}
+
+	// Otherwise, filter to only show user's own sessions.
+	userID := r.Context().Value(contextKeyUserID).(string)
+	user, err := s.store.GetUser(r.Context(), userID)
+	if err != nil {
+		s.jsonResponse(w, []ActiveSessionInfo{})
+		return
+	}
+
+	var userSessions []ActiveSessionInfo
+	for _, sess := range sessions {
+		if sess.Username == user.Username {
+			userSessions = append(userSessions, sess)
+		}
+	}
+	if userSessions == nil {
+		userSessions = []ActiveSessionInfo{}
+	}
+	s.jsonResponse(w, userSessions)
 }
 
 var wsUpgrader = websocket.Upgrader{

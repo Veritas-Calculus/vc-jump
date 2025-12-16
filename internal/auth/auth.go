@@ -86,16 +86,9 @@ func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, pass
 		return nil, errors.New("password cannot be empty")
 	}
 
-	// Check cache first.
 	cacheKey := a.cacheKey(username, password)
-	if user := a.cache.get(cacheKey); user != nil {
-		if time.Now().Before(user.ExpiresAt) {
-			return user, nil
-		}
-		a.cache.delete(cacheKey)
-	}
 
-	// If store is available, verify against database.
+	// If store is available, always verify against database first.
 	if a.store != nil {
 		user, err := a.authenticateFromStore(ctx, username, password)
 		if err == nil {
@@ -103,7 +96,9 @@ func (a *Authenticator) AuthenticatePassword(ctx context.Context, username, pass
 			a.cache.set(cacheKey, user)
 			return user, nil
 		}
-		// If user exists but password wrong, return error.
+		// Clear cache on auth failure.
+		a.cache.delete(cacheKey)
+		// If user exists but password wrong or disabled, return error.
 		if !strings.Contains(err.Error(), "not found") {
 			return nil, err
 		}
@@ -136,15 +131,15 @@ func (a *Authenticator) authenticateFromStore(ctx context.Context, username, pas
 	_ = a.store.UpdateUserLastLogin(ctx, userWithPwd.ID)
 
 	return &User{
-		ID:       userWithPwd.ID,
-		Username: userWithPwd.Username,
-		Groups:   userWithPwd.Groups,
+		ID:           userWithPwd.ID,
+		Username:     userWithPwd.Username,
+		Groups:       userWithPwd.Groups,
+		AllowedHosts: userWithPwd.AllowedHosts,
 	}, nil
 }
 
 // AuthenticatePublicKey authenticates a user with a public key.
 // The user must exist in the database and have a matching public key registered.
-// If AllowSSHAutoRegister is enabled in config, new users will be auto-created.
 func (a *Authenticator) AuthenticatePublicKey(ctx context.Context, username string, key ssh.PublicKey) (*User, error) {
 	if username == "" {
 		return nil, errors.New("username cannot be empty")
@@ -153,63 +148,38 @@ func (a *Authenticator) AuthenticatePublicKey(ctx context.Context, username stri
 		return nil, errors.New("public key cannot be nil")
 	}
 
-	fingerprint := ssh.FingerprintSHA256(key)
-	cacheKey := a.cacheKeyPublicKey(username, fingerprint)
-	if user := a.cache.get(cacheKey); user != nil {
-		if time.Now().Before(user.ExpiresAt) {
-			return user, nil
-		}
-		a.cache.delete(cacheKey)
-	}
-
 	// Must have a store for public key authentication.
 	if a.store == nil {
 		return nil, errors.New("public key authentication requires database storage")
 	}
 
-	keyBytes := ssh.MarshalAuthorizedKey(key)
-	keyStr := strings.TrimSpace(string(keyBytes))
+	fingerprint := ssh.FingerprintSHA256(key)
+	cacheKey := a.cacheKeyPublicKey(username, fingerprint)
 
-	// First, try to find existing user and verify public key.
+	// Always verify user exists and is active in database first.
 	dbUser, err := a.store.GetUserByUsername(ctx, username)
-	if err == nil {
-		// User exists - verify the public key matches.
-		if !a.verifyUserPublicKey(dbUser, fingerprint) {
-			return nil, errors.New("public key not authorized for this user")
-		}
-
-		if !dbUser.IsActive {
-			return nil, errors.New("user account is disabled")
-		}
-
-		// Update last login.
-		_ = keyStr // Used when auto-registering key
-		_ = a.store.UpdateUserLastLogin(ctx, dbUser.ID)
-
-		user := &User{
-			ID:           dbUser.ID,
-			Username:     dbUser.Username,
-			Groups:       dbUser.Groups,
-			AllowedHosts: dbUser.AllowedHosts,
-			ExpiresAt:    time.Now().Add(a.cfg.CacheDuration),
-		}
-		a.cache.set(cacheKey, user)
-		return user, nil
-	}
-
-	// User doesn't exist - check if auto-registration is allowed.
-	if !a.cfg.AllowSSHAutoRegister {
-		return nil, errors.New("user not found and auto-registration is disabled")
-	}
-
-	// Auto-register new SSH user.
-	dbUser, err = a.store.GetOrCreateUser(ctx, username, storage.UserSourceSSH, keyStr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create user: %w", err)
+		// User not found - clear any cached entry and return error.
+		a.cache.delete(cacheKey)
+		return nil, errors.New("user not found")
 	}
 
 	if !dbUser.IsActive {
+		a.cache.delete(cacheKey)
 		return nil, errors.New("user account is disabled")
+	}
+
+	// User exists - verify the public key matches.
+	if !a.verifyUserPublicKey(dbUser, fingerprint) {
+		return nil, errors.New("public key not authorized for this user")
+	}
+
+	// Check cache for this user+key combo.
+	if user := a.cache.get(cacheKey); user != nil {
+		if time.Now().Before(user.ExpiresAt) {
+			return user, nil
+		}
+		a.cache.delete(cacheKey)
 	}
 
 	// Update last login.
@@ -239,14 +209,6 @@ func (a *Authenticator) verifyUserPublicKey(user *storage.User, fingerprint stri
 		if storedFingerprint == fingerprint {
 			return true
 		}
-	}
-
-	// If no public keys registered, check if user was created via SSH (has the key in their record).
-	// This is for backward compatibility with auto-created SSH users.
-	if user.Source == storage.UserSourceSSH && len(user.PublicKeys) == 0 {
-		// For SSH-sourced users without explicit keys, we need to add the key.
-		// This allows first-time SSH users to continue logging in.
-		return true
 	}
 
 	return false

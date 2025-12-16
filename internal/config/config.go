@@ -22,6 +22,7 @@ type Config struct {
 	Audit     AuditConfig     `yaml:"audit"`
 	Storage   StorageConfig   `yaml:"storage"`
 	Dashboard DashboardConfig `yaml:"dashboard"`
+	OTP       OTPConfig       `yaml:"otp"`
 }
 
 // ServerConfig holds SSH server configuration.
@@ -33,10 +34,9 @@ type ServerConfig struct {
 
 // AuthConfig holds authentication configuration.
 type AuthConfig struct {
-	SSOEndpoint          string        `yaml:"sso_endpoint"`
-	CacheDuration        time.Duration `yaml:"cache_duration"`
-	CachePath            string        `yaml:"cache_path"`
-	AllowSSHAutoRegister bool          `yaml:"allow_ssh_auto_register"` // If true, auto-create users on first SSH login.
+	SSOEndpoint   string        `yaml:"sso_endpoint"`
+	CacheDuration time.Duration `yaml:"cache_duration"`
+	CachePath     string        `yaml:"cache_path"`
 }
 
 // SessionConfig holds session management configuration.
@@ -112,6 +112,12 @@ type DashboardConfig struct {
 	CertFile       string `yaml:"cert_file"`
 	KeyFile        string `yaml:"key_file"`
 	SessionTimeout string `yaml:"session_timeout"`
+}
+
+// OTPConfig holds OTP (TOTP) configuration.
+type OTPConfig struct {
+	ForceEnabled bool   `yaml:"force_enabled"` // Force all users to use OTP.
+	Issuer       string `yaml:"issuer"`        // Issuer name shown in authenticator apps.
 }
 
 // DefaultConfig returns a Config with sensible defaults.

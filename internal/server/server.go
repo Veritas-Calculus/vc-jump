@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/Veritas-Calculus/vc-jump/internal/auth"
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
 	"github.com/Veritas-Calculus/vc-jump/internal/logger"
+	"github.com/Veritas-Calculus/vc-jump/internal/otp"
 	"github.com/Veritas-Calculus/vc-jump/internal/proxy"
 	"github.com/Veritas-Calculus/vc-jump/internal/rbac"
 	"github.com/Veritas-Calculus/vc-jump/internal/recording"
@@ -363,8 +366,11 @@ func (s *Server) handleSession(sshConn *ssh.ServerConn, channel ssh.Channel, req
 	// Get list of accessible hosts for this user.
 	hosts := s.selector.GetAccessibleHosts(username, groups, allowedHosts)
 
-	// Apply RBAC filtering if enabled.
-	hosts = s.filterHostsByRBAC(username, hosts)
+	// Apply RBAC filtering only if user doesn't have explicit allowed_hosts set.
+	// If user has allowed_hosts, those already define their access (handled by GetAccessibleHosts).
+	if len(allowedHosts) == 0 {
+		hosts = s.filterHostsByRBAC(username, hosts)
+	}
 
 	if len(hosts) == 0 {
 		_, _ = io.WriteString(channel, "No accessible hosts found.\r\n")
@@ -405,6 +411,11 @@ func (s *Server) runInteractiveSession(
 	sourceIP := sshConn.RemoteAddr().String()
 	isAdmin := s.isAdmin(username, groups)
 
+	// Check if OTP verification is required.
+	if !s.verifyOTP(channel, username) {
+		return
+	}
+
 	selectedHost, err := s.selector.SelectHostWithAdmin(channel, hosts, isAdmin)
 	if err != nil {
 		s.logger.Infof("host selection failed: %v", err)
@@ -423,6 +434,119 @@ func (s *Server) runInteractiveSession(
 	defer s.cleanupSession(dbSession, rec)
 
 	s.executeProxyConnection(channel, selectedHost, ptyReq, rec)
+}
+
+// verifyOTP checks if OTP is required and validates it.
+// Returns true if OTP is not required or verification succeeds.
+func (s *Server) verifyOTP(channel ssh.Channel, username string) bool {
+	if s.sqliteStore == nil {
+		return true // No database, skip OTP.
+	}
+
+	ctx := context.Background()
+
+	// Check global OTP force setting.
+	otpForced := s.cfg.OTP.ForceEnabled
+	if !otpForced {
+		// Check database setting.
+		if val, _ := s.sqliteStore.GetSetting(ctx, "otp_force_enabled"); val == "true" {
+			otpForced = true
+		}
+	}
+
+	// Get user info.
+	user, err := s.sqliteStore.GetUserByUsername(ctx, username)
+	if err != nil {
+		// User not in database, check if OTP is globally forced.
+		if otpForced {
+			_, _ = io.WriteString(channel, "\r\n⚠ OTP is required but not set up for your account.\r\n")
+			_, _ = io.WriteString(channel, "Please contact an administrator to set up OTP.\r\n")
+			return false
+		}
+		return true // No user record and OTP not forced, allow.
+	}
+
+	// Determine if OTP is required for this user.
+	otpRequired := otpForced || user.OTPEnabled
+
+	if !otpRequired {
+		return true // OTP not required for this user.
+	}
+
+	// Check if user has OTP set up.
+	if user.OTPSecret == "" {
+		if otpForced {
+			_, _ = io.WriteString(channel, "\r\n⚠ OTP is required but not set up for your account.\r\n")
+			_, _ = io.WriteString(channel, "Please set up OTP in the dashboard first.\r\n")
+			return false
+		}
+		return true // User enabled OTP but hasn't set it up yet.
+	}
+
+	// Prompt for OTP code.
+	_, _ = io.WriteString(channel, "\r\n🔐 OTP Verification Required\r\n")
+	_, _ = io.WriteString(channel, "Enter your 6-digit code: ")
+
+	// Read OTP code from user.
+	code, err := s.readLine(channel)
+	if err != nil {
+		s.logger.Infof("failed to read OTP code: %v", err)
+		return false
+	}
+
+	code = strings.TrimSpace(code)
+
+	// Validate OTP.
+	if !otp.Validate(code, user.OTPSecret) {
+		_, _ = io.WriteString(channel, "\r\n❌ Invalid OTP code.\r\n")
+		if s.auditor != nil {
+			s.auditor.LogLogin(username, "", "otp_failed")
+		}
+		return false
+	}
+
+	_, _ = io.WriteString(channel, "\r\n✓ OTP verified.\r\n\r\n")
+	return true
+}
+
+// readLine reads a line of input from the channel.
+func (s *Server) readLine(channel ssh.Channel) (string, error) {
+	reader := bufio.NewReader(channel)
+	var line strings.Builder
+
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			return "", err
+		}
+
+		// Handle Enter key.
+		if b == '\r' || b == '\n' {
+			break
+		}
+
+		// Handle backspace.
+		if b == 127 || b == 8 {
+			if line.Len() > 0 {
+				str := line.String()
+				line.Reset()
+				line.WriteString(str[:len(str)-1])
+				_, _ = channel.Write([]byte("\b \b"))
+			}
+			continue
+		}
+
+		// Ignore control characters.
+		if b < 32 {
+			continue
+		}
+
+		line.WriteByte(b)
+		// Echo asterisk for OTP input.
+		_, _ = channel.Write([]byte("*"))
+	}
+
+	return line.String(), nil
 }
 
 func (s *Server) logConnectEvent(username, sourceIP, hostName string) {

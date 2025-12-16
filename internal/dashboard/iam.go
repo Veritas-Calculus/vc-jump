@@ -262,6 +262,20 @@ func (s *Server) revokeUserRole(w http.ResponseWriter, r *http.Request, userID s
 		return
 	}
 
+	// Protect admin user's admin role from being revoked.
+	user, err := s.store.GetUser(r.Context(), userID)
+	if err != nil {
+		s.jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.Username == "admin" {
+		role, err := s.store.GetRole(r.Context(), roleID)
+		if err == nil && role.Name == "admin" {
+			s.jsonError(w, "cannot revoke admin role from admin user", http.StatusForbidden)
+			return
+		}
+	}
+
 	if err := s.store.RevokeRole(r.Context(), userID, roleID); err != nil {
 		s.jsonError(w, err.Error(), http.StatusBadRequest)
 		return

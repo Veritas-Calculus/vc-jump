@@ -49,9 +49,14 @@ type User struct {
 	AllowedHosts []string   `json:"allowed_hosts"` // Host IDs user can access.
 	Source       UserSource `json:"source"`        // local, ssh, oidc.
 	IsActive     bool       `json:"is_active"`
-	LastLoginAt  time.Time  `json:"last_login_at,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	// OTP fields.
+	OTPSecret   string `json:"otp_secret,omitempty"` // TOTP secret key.
+	OTPEnabled  bool   `json:"otp_enabled"`          // User has enabled OTP.
+	OTPVerified bool   `json:"otp_verified"`         // User has verified OTP setup.
+	// Timestamps.
+	LastLoginAt time.Time `json:"last_login_at,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // Session represents a session record in storage.

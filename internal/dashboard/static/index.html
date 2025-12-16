@@ -105,12 +105,13 @@
             <div class="sidebar">
                 <ul>
                     <li><a href="#overview" data-section="overview">Overview</a></li>
-                    <li><a href="#hosts" data-section="hosts">Hosts</a></li>
-                    <li><a href="#users" data-section="users">Users</a></li>
-                    <li><a href="#keys" data-section="keys">SSH Keys</a></li>
-                    <li><a href="#sessions" data-section="sessions">Sessions</a></li>
-                    <li><a href="#recordings" data-section="recordings">Recordings</a></li>
-                    <li><a href="#iam" data-section="iam">IAM</a></li>
+                    <li><a href="#hosts" data-section="hosts" data-permission="host:view">Hosts</a></li>
+                    <li><a href="#users" data-section="users" data-permission="user:view">Users</a></li>
+                    <li><a href="#keys" data-section="keys" data-permission="sshkey:view">SSH Keys</a></li>
+                    <li><a href="#sessions" data-section="sessions" data-permission="session:view">Sessions</a></li>
+                    <li><a href="#recordings" data-section="recordings" data-permission="recording:view">Recordings</a></li>
+                    <li><a href="#iam" data-section="iam" data-permission="iam:view">IAM</a></li>
+                    <li><a href="#settings" data-section="settings" data-permission="settings:view">Settings</a></li>
                 </ul>
             </div>
             <div class="content">
@@ -126,7 +127,7 @@
 
                 <div class="section" id="section-hosts">
                     <h2>Hosts</h2>
-                    <button class="btn-sm btn-add" onclick="showModal('addHostModal')">+ Add Host</button>
+                    <button class="btn-sm btn-add" onclick="showModal('addHostModal')" data-perm-create="host:create">+ Add Host</button>
                     <table>
                         <thead><tr><th>Name</th><th>Address</th><th>Port</th><th>SSH Key</th><th>Users</th><th>Action</th></tr></thead>
                         <tbody id="hosts-table"></tbody>
@@ -135,16 +136,16 @@
 
                 <div class="section" id="section-users">
                     <h2>Users</h2>
-                    <button class="btn-sm btn-add" onclick="showModal('addUserModal')">+ Add User</button>
+                    <button class="btn-sm btn-add" onclick="openAddUserModal()" data-perm-create="user:create">+ Add User</button>
                     <table>
-                        <thead><tr><th>Username</th><th>Source</th><th>Groups</th><th>Allowed Hosts</th><th>Status</th><th>Last Login</th><th>Action</th></tr></thead>
+                        <thead><tr><th>Username</th><th>Role</th><th>Source</th><th>Groups</th><th>Allowed Hosts</th><th>Status</th><th>Last Login</th><th>Action</th></tr></thead>
                         <tbody id="users-table"></tbody>
                     </table>
                 </div>
 
                 <div class="section" id="section-keys">
                     <h2>SSH Keys</h2>
-                    <button class="btn-sm btn-add" onclick="showModal('addKeyModal')">+ Generate Key</button>
+                    <button class="btn-sm btn-add" onclick="showModal('addKeyModal')" data-perm-create="sshkey:create">+ Generate Key</button>
                     <table>
                         <thead><tr><th>Name</th><th>Type</th><th>Fingerprint</th><th>Used By</th><th>Created</th><th>Action</th></tr></thead>
                         <tbody id="keys-table"></tbody>
@@ -221,6 +222,24 @@
                         </table>
                     </div>
                 </div>
+
+                <div class="section" id="section-settings">
+                    <h2>Settings</h2>
+                    
+                    <h3 style="margin-top:20px">🔐 Your OTP Settings</h3>
+                    <div id="otp-user-settings" style="margin-top:10px;padding:15px;background:#f9f9f9;border:1px solid #ddd">
+                        <div id="otp-status-display">Loading...</div>
+                    </div>
+                    
+                    <h3 style="margin-top:30px">🔒 Global Security Settings (Admin Only)</h3>
+                    <div style="margin-top:10px;padding:15px;background:#f9f9f9;border:1px solid #ddd">
+                        <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+                            <input type="checkbox" id="otpForceEnabled" onchange="updateOTPGlobalSetting()">
+                            <span>Force OTP for all users</span>
+                        </label>
+                        <p style="font-size:11px;color:#666;margin-top:5px">When enabled, all users must verify OTP before accessing hosts.</p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -283,9 +302,10 @@
             <form id="addUserForm">
                 <input type="hidden" name="id" id="userEditId">
                 <div class="form-group"><label>Username</label><input type="text" name="username" id="userUsername" required></div>
-                <div class="form-group" id="passwordGroup"><label>Password</label><input type="password" name="password" id="userPassword"></div>
-                <div class="form-group"><label>Groups (comma sep)</label><input type="text" name="groups" id="userGroups"></div>
-                <div class="form-group"><label>Allowed Hosts</label><input type="text" name="allowed_hosts" id="userAllowedHosts" placeholder="* for all, or comma-sep list"></div>
+                <div class="form-group" id="passwordGroup"><label>Password</label><input type="password" name="password" id="userPassword" required></div>
+                <div class="form-group" id="roleGroup"><label>Roles</label><select name="role_ids" id="userRoles" multiple style="height:80px"><option value="">Loading roles...</option></select><small style="color:#888">Hold Ctrl/Cmd to select multiple roles</small></div>
+                <div class="form-group" id="groupsGroup"><label>Group</label><select name="groups" id="userGroups"><option value="">Select a group...</option></select></div>
+                <div class="form-group" id="allowedHostsGroup"><label>Allowed Hosts</label><select name="allowed_hosts" id="userAllowedHosts" multiple style="height:100px"></select><small style="color:#888">Leave empty = no access. Hold Ctrl/Cmd to select multiple</small></div>
                 <div class="modal-actions">
                     <button type="button" class="btn-sm" onclick="closeModal('addUserModal')">Cancel</button>
                     <button type="submit" class="btn-sm btn-add" id="userSubmitBtn">Add</button>
@@ -416,6 +436,13 @@
     <script>
         let token = localStorage.getItem('token');
         let currentUser = null;
+        let userPermissions = [];
+        let allRoles = []; // Cache for roles (used by Users and IAM)
+
+        // Permission check helper
+        function hasPermission(perm) {
+            return userPermissions.includes(perm);
+        }
 
         if (token) checkAuth();
 
@@ -437,14 +464,30 @@
                 token = data.token;
                 localStorage.setItem('token', token);
                 currentUser = data.user;
+                await loadUserPermissions();
                 showDashboard();
             } catch (e) { err.textContent = e.message; }
         };
 
+        async function loadUserPermissions() {
+            try {
+                const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + token } });
+                if (res.ok) {
+                    const data = await res.json();
+                    currentUser = data;
+                    userPermissions = data.permissions || [];
+                }
+            } catch (e) { userPermissions = []; }
+        }
+
         async function checkAuth() {
             try {
                 const res = await fetch('/api/me', { headers: { 'Authorization': 'Bearer ' + token } });
-                if (res.ok) { currentUser = await res.json(); showDashboard(); }
+                if (res.ok) {
+                    currentUser = await res.json();
+                    userPermissions = currentUser.permissions || [];
+                    showDashboard();
+                }
                 else { localStorage.removeItem('token'); token = null; }
             } catch (e) { localStorage.removeItem('token'); token = null; }
         }
@@ -456,10 +499,44 @@
             document.getElementById('loginContainer').classList.add('hidden');
             document.getElementById('dashboard').classList.add('active');
             document.getElementById('currentUser').textContent = currentUser.username;
+            
+            // Apply permission-based visibility
+            applyPermissions();
+            
             loadKeysCache(); // preload keys for dropdown
             
             // Initialize routing
             initRouter();
+        }
+
+        function applyPermissions() {
+            // Hide sidebar items based on permissions
+            document.querySelectorAll('.sidebar a[data-permission]').forEach(el => {
+                const requiredPerm = el.getAttribute('data-permission');
+                if (requiredPerm && !hasPermission(requiredPerm)) {
+                    el.parentElement.style.display = 'none';
+                } else {
+                    el.parentElement.style.display = '';
+                }
+            });
+
+            // Hide add buttons based on permissions
+            document.querySelectorAll('[data-perm-create]').forEach(el => {
+                const requiredPerm = el.getAttribute('data-perm-create');
+                el.style.display = hasPermission(requiredPerm) ? '' : 'none';
+            });
+
+            // Hide delete buttons based on permissions
+            document.querySelectorAll('[data-perm-delete]').forEach(el => {
+                const requiredPerm = el.getAttribute('data-perm-delete');
+                el.style.display = hasPermission(requiredPerm) ? '' : 'none';
+            });
+
+            // Hide edit buttons based on permissions
+            document.querySelectorAll('[data-perm-update]').forEach(el => {
+                const requiredPerm = el.getAttribute('data-perm-update');
+                el.style.display = hasPermission(requiredPerm) ? '' : 'none';
+            });
         }
 
         async function loadKeysCache() {
@@ -477,7 +554,19 @@
         // ============================================================
         // Hash-based Routing
         // ============================================================
-        const validSections = ['overview', 'hosts', 'users', 'keys', 'sessions', 'recordings', 'iam'];
+        const validSections = ['overview', 'hosts', 'users', 'keys', 'sessions', 'recordings', 'iam', 'settings'];
+        
+        // Map sections to required permissions
+        const sectionPermissions = {
+            'overview': null, // Everyone can see overview
+            'hosts': 'host:view',
+            'users': 'user:view',
+            'keys': 'sshkey:view',
+            'sessions': 'session:view',
+            'recordings': 'recording:view',
+            'iam': 'iam:view',
+            'settings': 'settings:view'
+        };
         
         function initRouter() {
             // Listen for hash changes
@@ -493,7 +582,16 @@
             // Default to overview if no hash or invalid hash
             if (!hash || !validSections.includes(hash)) {
                 hash = 'overview';
-                // Update URL without triggering another hashchange
+            }
+            
+            // Check permission for the section
+            const requiredPerm = sectionPermissions[hash];
+            if (requiredPerm && !hasPermission(requiredPerm)) {
+                hash = 'overview'; // Redirect to overview if no permission
+            }
+            
+            // Update URL without triggering another hashchange
+            if (window.location.hash !== '#' + hash) {
                 history.replaceState(null, '', '#' + hash);
             }
             
@@ -528,6 +626,7 @@
             else if (s === 'sessions') loadSessions();
             else if (s === 'recordings') loadRecordings();
             else if (s === 'iam') loadIam();
+            else if (s === 'settings') loadSettings();
         }
 
         async function loadStats() {
@@ -550,6 +649,8 @@
             try {
                 const hosts = await (await fetch('/api/hosts', { headers: { 'Authorization': 'Bearer ' + token } })).json();
                 allHosts = hosts || [];
+                const canEdit = hasPermission('host:update');
+                const canDelete = hasPermission('host:delete');
                 document.getElementById('hosts-table').innerHTML = allHosts.map(h => 
                     `<tr>
                         <td>${h.name}</td>
@@ -558,8 +659,9 @@
                         <td>${getKeyName(h.key_id)}</td>
                         <td>${h.user || 'root'}</td>
                         <td>
-                            <button class="btn-sm" onclick="editHost('${h.id}')">Edit</button>
-                            <button class="btn-sm btn-del" onclick="deleteHost('${h.id}')">Del</button>
+                            ${canEdit ? `<button class="btn-sm" onclick="editHost('${h.id}')">Edit</button>` : ''}
+                            ${canDelete ? `<button class="btn-sm btn-del" onclick="deleteHost('${h.id}')">Del</button>` : ''}
+                            ${!canEdit && !canDelete ? '-' : ''}
                         </td>
                     </tr>`
                 ).join('');
@@ -575,19 +677,30 @@
         async function loadUsers() {
             try {
                 const users = await (await fetch('/api/users', { headers: { 'Authorization': 'Bearer ' + token } })).json();
-                document.getElementById('users-table').innerHTML = (users || []).map(u => 
-                    `<tr>
+                const canEdit = hasPermission('user:update');
+                const canDelete = hasPermission('user:delete');
+                const canManageIAM = hasPermission('iam:manage');
+                document.getElementById('users-table').innerHTML = (users || []).map(u => {
+                    let actions = '-';
+                    if (u.username !== 'admin') {
+                        const editBtn = canEdit ? `<button class="btn-sm" onclick="editUser('${u.id}')">Edit</button>` : '';
+                        const delBtn = canDelete ? `<button class="btn-sm btn-del" onclick="deleteUser('${u.id}')">Del</button>` : '';
+                        actions = (editBtn || delBtn) ? `${editBtn} ${delBtn}` : '-';
+                    } else if (canEdit) {
+                        actions = `<button class="btn-sm" onclick="editUser('${u.id}')">Edit</button>`;
+                    }
+                    const roleDisplay = (u.roles || []).join(', ') || '<span style="color:#999">No Role</span>';
+                    return `<tr>
                         <td>${u.username}</td>
+                        <td>${roleDisplay}</td>
                         <td>${sourceLabel(u.source)}</td>
                         <td>${(u.groups||[]).join(', ') || '-'}</td>
-                        <td>${(u.allowed_hosts||[]).join(', ') || '*'}</td>
+                        <td>${(u.allowed_hosts||[]).join(', ') || '<span style="color:#c00">None</span>'}</td>
                         <td>${u.is_active ? '<span class="active-badge">Active</span>' : 'Inactive'}</td>
                         <td>${u.last_login_at ? new Date(u.last_login_at).toLocaleString() : '-'}</td>
-                        <td>
-                            ${u.username === 'admin' ? '-' : `<button class="btn-sm" onclick="editUser('${u.id}')">Edit</button> <button class="btn-sm btn-del" onclick="deleteUser('${u.id}')">Del</button>`}
-                        </td>
-                    </tr>`
-                ).join('');
+                        <td>${actions}</td>
+                    </tr>`;
+                }).join('');
             } catch (e) {}
         }
 
@@ -599,6 +712,7 @@
             try {
                 const keys = await (await fetch('/api/keys', { headers: { 'Authorization': 'Bearer ' + token } })).json();
                 allKeys = keys || [];
+                const canDelete = hasPermission('sshkey:delete');
                 document.getElementById('keys-table').innerHTML = allKeys.map(k => 
                     `<tr>
                         <td>${k.name}</td>
@@ -608,7 +722,7 @@
                         <td>${new Date(k.created_at).toLocaleDateString()}</td>
                         <td>
                             <button class="btn-sm" onclick="copyKey('${btoa(k.public_key||'')}')">Copy Pub</button>
-                            <button class="btn-sm btn-del" onclick="deleteKey('${k.id}')">Del</button>
+                            ${canDelete ? `<button class="btn-sm btn-del" onclick="deleteKey('${k.id}')">Del</button>` : ''}
                         </td>
                     </tr>`
                 ).join('');
@@ -1248,14 +1362,67 @@
             document.getElementById('userEditId').value = '';
             document.getElementById('userUsername').value = '';
             document.getElementById('userPassword').value = '';
-            document.getElementById('userGroups').value = '';
-            document.getElementById('userAllowedHosts').value = '';
+            document.getElementById('userPassword').setAttribute('required', true);
             document.getElementById('passwordGroup').style.display = '';
+            document.getElementById('roleGroup').style.display = '';
+            document.getElementById('groupsGroup').style.display = '';
+            document.getElementById('allowedHostsGroup').style.display = '';
             document.getElementById('userUsername').removeAttribute('readonly');
+            // Clear selects
+            document.getElementById('userGroups').value = '';
+            const rolesSel = document.getElementById('userRoles');
+            for (let opt of rolesSel.options) opt.selected = false;
+            const hostsSel = document.getElementById('userAllowedHosts');
+            for (let opt of hostsSel.options) opt.selected = false;
+        }
+
+        async function openAddUserModal() {
+            resetUserForm();
+            // Load all dropdown data before showing modal
+            await Promise.all([
+                loadRolesForUserForm(),
+                loadGroupsForUserForm(),
+                loadHostsForUserForm()
+            ]);
+            showModal('addUserModal');
+        }
+
+        async function loadGroupsForUserForm() {
+            try {
+                // Get unique groups from hosts (since user groups are matched against host groups)
+                const hosts = await (await fetch('/api/hosts', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                const groupSet = new Set();
+                (hosts||[]).forEach(h => {
+                    (h.groups||[]).forEach(g => groupSet.add(g));
+                });
+                // Also add some common groups
+                ['admin', 'users', 'operators', 'developers'].forEach(g => groupSet.add(g));
+                const sel = document.getElementById('userGroups');
+                sel.innerHTML = '<option value="">Select a group...</option>';
+                Array.from(groupSet).sort().forEach(g => {
+                    sel.innerHTML += `<option value="${g}">${g}</option>`;
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadHostsForUserForm() {
+            try {
+                const hosts = await (await fetch('/api/hosts', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                const sel = document.getElementById('userAllowedHosts');
+                sel.innerHTML = '';
+                (hosts||[]).forEach(h => {
+                    sel.innerHTML += `<option value="${h.name}">${h.name} (${h.addr})</option>`;
+                });
+            } catch (e) {}
         }
 
         async function editUser(id) {
             try {
+                await Promise.all([
+                    loadRolesForUserForm(),
+                    loadGroupsForUserForm(),
+                    loadHostsForUserForm()
+                ]);
                 const users = await (await fetch('/api/users', { headers: { 'Authorization': 'Bearer ' + token } })).json();
                 const u = (users||[]).find(u => u.id === id);
                 if (!u) return;
@@ -1266,38 +1433,126 @@
                 document.getElementById('userUsername').value = u.username;
                 document.getElementById('userUsername').setAttribute('readonly', true);
                 document.getElementById('userPassword').value = '';
-                document.getElementById('passwordGroup').style.display = 'none'; // don't show password for edit
-                document.getElementById('userGroups').value = (u.groups||[]).join(', ');
-                document.getElementById('userAllowedHosts').value = (u.allowed_hosts||[]).join(', ');
+                document.getElementById('userPassword').removeAttribute('required');
+                document.getElementById('passwordGroup').style.display = 'none';
+                
+                // Show role selection for users with iam:manage permission (except for admin user)
+                const canManageRoles = hasPermission('iam:manage') && u.username !== 'admin';
+                document.getElementById('roleGroup').style.display = canManageRoles ? '' : 'none';
+                
+                // Set current roles (multi-select)
+                if (canManageRoles) {
+                    const roleSel = document.getElementById('userRoles');
+                    const userRoleNames = (u.roles || []).map(r => r.toLowerCase());
+                    for (let opt of roleSel.options) {
+                        const optName = (opt.getAttribute('data-name') || opt.text).toLowerCase();
+                        opt.selected = userRoleNames.some(rn => optName.includes(rn) || rn.includes(optName));
+                    }
+                }
+                
+                // Set selected group (first group in array or empty)
+                const groupsSel = document.getElementById('userGroups');
+                groupsSel.value = (u.groups && u.groups.length > 0) ? u.groups[0] : '';
+                // Set selected hosts
+                const hostsSel = document.getElementById('userAllowedHosts');
+                for (let opt of hostsSel.options) {
+                    opt.selected = (u.allowed_hosts||[]).includes(opt.value);
+                }
                 showModal('addUserModal');
-            } catch (e) {}
+            } catch (e) { console.error(e); }
+        }
+
+        // Load roles for user creation dropdown (multi-select)
+        async function loadRolesForUserForm() {
+            try {
+                const roles = await (await fetch('/api/iam/roles', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                allRoles = roles || [];
+                const sel = document.getElementById('userRoles');
+                sel.innerHTML = '';
+                allRoles.forEach(r => {
+                    sel.innerHTML += `<option value="${r.id}" data-name="${r.name}">${r.display_name || r.name}</option>`;
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        // Helper to get selected values from multi-select
+        function getSelectedValues(selectEl) {
+            return Array.from(selectEl.selectedOptions).map(opt => opt.value);
         }
 
         document.getElementById('addUserForm').onsubmit = async (e) => {
             e.preventDefault();
-            const f = e.target;
             const id = document.getElementById('userEditId').value;
-            const allowedHosts = f.allowed_hosts.value ? f.allowed_hosts.value.split(',').map(h=>h.trim()) : [];
+            const groupVal = document.getElementById('userGroups').value;
+            const groups = groupVal ? [groupVal] : [];
+            const allowedHosts = getSelectedValues(document.getElementById('userAllowedHosts'));
+            const selectedRoleIds = getSelectedValues(document.getElementById('userRoles'));
+            
             if (id) {
+                // Update user basic info
                 await fetch('/api/users/' + id, {
                     method: 'PUT',
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
-                        groups: f.groups.value ? f.groups.value.split(',').map(g=>g.trim()) : [],
+                        groups: groups,
                         allowed_hosts: allowedHosts
                     })
                 });
+                
+                // Update roles if user has iam:manage permission
+                if (hasPermission('iam:manage')) {
+                    // Get current roles
+                    const currentRoles = await (await fetch('/api/iam/user-roles/' + id, { headers: { 'Authorization': 'Bearer ' + token } })).json() || [];
+                    const currentRoleIds = currentRoles.map(r => r.id);
+                    
+                    // Remove roles that are no longer selected
+                    for (const role of currentRoles) {
+                        if (!selectedRoleIds.includes(role.id)) {
+                            await fetch('/api/iam/user-roles/' + id + '?role_id=' + role.id, {
+                                method: 'DELETE',
+                                headers: { 'Authorization': 'Bearer ' + token }
+                            });
+                        }
+                    }
+                    
+                    // Add newly selected roles
+                    for (const roleId of selectedRoleIds) {
+                        if (!currentRoleIds.includes(roleId)) {
+                            await fetch('/api/iam/user-roles/' + id, {
+                                method: 'POST',
+                                headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ role_id: roleId })
+                            });
+                        }
+                    }
+                }
             } else {
-                await fetch('/api/users', {
+                const username = document.getElementById('userUsername').value;
+                const password = document.getElementById('userPassword').value;
+                // Create user first
+                const resp = await fetch('/api/users', {
                     method: 'POST',
                     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
-                        username: f.username.value, 
-                        password: f.password.value, 
-                        groups: f.groups.value ? f.groups.value.split(',').map(g=>g.trim()) : [],
-                        allowed_hosts: allowedHosts
+                        username: username, 
+                        password: password, 
+                        groups: groups,
+                        allowed_hosts: allowedHosts,
+                        role_id: selectedRoleIds[0] || '' // First role assigned at creation
                     })
                 });
+                
+                // Assign additional roles if more than one selected
+                if (resp.ok && selectedRoleIds.length > 1) {
+                    const newUser = await resp.json();
+                    for (let i = 1; i < selectedRoleIds.length; i++) {
+                        await fetch('/api/iam/user-roles/' + newUser.id, {
+                            method: 'POST',
+                            headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ role_id: selectedRoleIds[i] })
+                        });
+                    }
+                }
             }
             closeModal('addUserModal'); resetUserForm(); loadUsers();
         };
@@ -1321,7 +1576,6 @@
         // ============================================================
         // IAM (Identity & Access Management)
         // ============================================================
-        let allRoles = [];
         let allPermissions = [];
         let allUsersForIam = [];
 
@@ -1581,6 +1835,154 @@
             }
             originalShowModal(id);
         };
+
+        // OTP Settings Functions
+        async function loadSettings() {
+            await loadOTPStatus();
+            await loadOTPGlobalSettings();
+        }
+
+        async function loadOTPStatus() {
+            try {
+                const status = await (await fetch('/api/otp/status', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                const container = document.getElementById('otp-status-display');
+                
+                if (status.enabled && status.verified) {
+                    container.innerHTML = `
+                        <div style="color:#090;font-weight:bold;margin-bottom:10px">✓ OTP is enabled for your account</div>
+                        <p style="font-size:12px;color:#666">You will be prompted for OTP code when connecting via SSH.</p>
+                        <button class="btn-sm btn-del" onclick="disableOTP()" style="margin-top:10px">Disable OTP</button>
+                    `;
+                } else {
+                    const forceMsg = status.force_enabled ? '<p style="color:#c00;font-size:12px;margin-bottom:10px">⚠ OTP is required by your administrator.</p>' : '';
+                    container.innerHTML = `
+                        ${forceMsg}
+                        <div style="margin-bottom:10px">OTP is not enabled for your account.</div>
+                        <button class="btn-sm btn-add" onclick="setupOTP()">Enable OTP</button>
+                    `;
+                }
+            } catch (e) {
+                console.error('Failed to load OTP status:', e);
+            }
+        }
+
+        async function loadOTPGlobalSettings() {
+            try {
+                const settings = await (await fetch('/api/settings/otp', { headers: { 'Authorization': 'Bearer ' + token } })).json();
+                document.getElementById('otpForceEnabled').checked = settings.force_enabled;
+            } catch (e) {
+                console.error('Failed to load global OTP settings:', e);
+            }
+        }
+
+        async function setupOTP() {
+            try {
+                const resp = await fetch('/api/otp/setup', { 
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const data = await resp.json();
+                
+                if (!resp.ok) {
+                    alert('Failed to setup OTP: ' + (data.error || 'Unknown error'));
+                    return;
+                }
+                
+                // Show QR code modal
+                const container = document.getElementById('otp-status-display');
+                container.innerHTML = `
+                    <div style="text-align:center">
+                        <h4 style="margin-bottom:15px">Scan this QR code with your authenticator app</h4>
+                        <img src="data:image/png;base64,${data.qr_code}" alt="OTP QR Code" style="border:1px solid #ccc;padding:10px;background:#fff">
+                        <p style="margin-top:15px;font-size:12px">Or enter this secret manually:</p>
+                        <code style="user-select:all;font-size:14px;background:#f0f0f0;padding:8px;display:inline-block;margin:10px 0">${data.secret}</code>
+                        <div style="margin-top:20px">
+                            <label>Enter the 6-digit code from your app to verify:</label>
+                            <div style="margin-top:10px;display:flex;gap:10px;justify-content:center;align-items:center">
+                                <input type="text" id="otpVerifyCode" maxlength="6" style="width:120px;text-align:center;font-size:18px;padding:8px" placeholder="000000">
+                                <button class="btn-sm btn-add" onclick="verifyOTP()">Verify & Enable</button>
+                            </div>
+                        </div>
+                        <button class="btn-sm" onclick="loadOTPStatus()" style="margin-top:15px">Cancel</button>
+                    </div>
+                `;
+            } catch (e) {
+                alert('Error setting up OTP: ' + e.message);
+            }
+        }
+
+        async function verifyOTP() {
+            const code = document.getElementById('otpVerifyCode').value.trim();
+            if (!code || code.length !== 6) {
+                alert('Please enter a 6-digit code');
+                return;
+            }
+            
+            try {
+                const resp = await fetch('/api/otp/verify', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: code })
+                });
+                const data = await resp.json();
+                
+                if (!resp.ok) {
+                    alert('Verification failed: ' + (data.error || 'Invalid code'));
+                    return;
+                }
+                
+                alert('OTP enabled successfully!');
+                loadOTPStatus();
+            } catch (e) {
+                alert('Error verifying OTP: ' + e.message);
+            }
+        }
+
+        async function disableOTP() {
+            if (!confirm('Are you sure you want to disable OTP? This will reduce your account security.')) {
+                return;
+            }
+            
+            try {
+                const resp = await fetch('/api/otp', {
+                    method: 'DELETE',
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                const data = await resp.json();
+                
+                if (!resp.ok) {
+                    alert('Failed to disable OTP: ' + (data.error || 'Unknown error'));
+                    return;
+                }
+                
+                alert('OTP disabled.');
+                loadOTPStatus();
+            } catch (e) {
+                alert('Error disabling OTP: ' + e.message);
+            }
+        }
+
+        async function updateOTPGlobalSetting() {
+            const forceEnabled = document.getElementById('otpForceEnabled').checked;
+            
+            try {
+                const resp = await fetch('/api/settings/otp', {
+                    method: 'PUT',
+                    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ force_enabled: forceEnabled })
+                });
+                const data = await resp.json();
+                
+                if (!resp.ok) {
+                    alert('Failed to update setting: ' + (data.error || 'Unknown error'));
+                    document.getElementById('otpForceEnabled').checked = !forceEnabled;
+                    return;
+                }
+            } catch (e) {
+                alert('Error updating setting: ' + e.message);
+                document.getElementById('otpForceEnabled').checked = !forceEnabled;
+            }
+        }
     </script>
 </body>
 </html>

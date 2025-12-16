@@ -327,8 +327,6 @@ func DefaultRoles() []Role {
 			Description: "Access to assigned hosts for development",
 			Permissions: []string{
 				PermHostConnect, PermHostView,
-				PermSessionView,
-				PermRecordingView,
 			},
 			IsSystem: true,
 		},
@@ -338,9 +336,6 @@ func DefaultRoles() []Role {
 			Description: "Access to assigned hosts for operations",
 			Permissions: []string{
 				PermHostConnect, PermHostView, PermHostCreate, PermHostUpdate,
-				PermUserView,
-				PermSessionView, PermSessionWatch,
-				PermRecordingView,
 				PermSSHKeyView, PermSSHKeyCreate,
 			},
 			IsSystem: true,
@@ -351,7 +346,6 @@ func DefaultRoles() []Role {
 			Description: "Limited access for testing",
 			Permissions: []string{
 				PermHostConnect, PermHostView,
-				PermSessionView,
 			},
 			IsSystem: true,
 		},
@@ -361,7 +355,6 @@ func DefaultRoles() []Role {
 			Description: "Read-only access to logs and sessions",
 			Permissions: []string{
 				PermHostView,
-				PermUserView,
 				PermSessionView,
 				PermRecordingView,
 				PermAuditView,
