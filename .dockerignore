@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Build artifacts
+vc-jump
+vc-jump-linux
+*.exe
+
+# Test files
+*_test.go
+coverage.out
+*.test
+
+# Documentation
+*.md
+LICENSE
+
+# Config examples
+*.example.yaml
+*.example.yml
+
+# Docker
+Dockerfile*
+docker-compose*
+.docker
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# Misc
+.DS_Store
+Thumbs.db
