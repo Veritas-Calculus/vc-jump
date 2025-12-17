@@ -68,12 +68,14 @@ type RecordingConfig struct {
 
 // S3Config holds S3 storage configuration.
 type S3Config struct {
-	Endpoint        string `yaml:"endpoint"`
-	Bucket          string `yaml:"bucket"`
-	Region          string `yaml:"region"`
-	AccessKeyID     string `yaml:"access_key_id"`
-	SecretAccessKey string `yaml:"secret_access_key"`
-	UseSSL          bool   `yaml:"use_ssl"`
+	Endpoint        string `yaml:"endpoint"`          // S3-compatible endpoint (empty for AWS).
+	Bucket          string `yaml:"bucket"`            // Bucket name.
+	Region          string `yaml:"region"`            // AWS region.
+	AccessKeyID     string `yaml:"access_key_id"`     // Access key ID.
+	SecretAccessKey string `yaml:"secret_access_key"` // Secret access key.
+	UseSSL          bool   `yaml:"use_ssl"`           // Use HTTPS.
+	Prefix          string `yaml:"prefix"`            // Object key prefix for organization.
+	ForcePathStyle  bool   `yaml:"force_path_style"`  // Use path-style addressing (required for MinIO).
 }
 
 // LoggingConfig holds logging configuration.

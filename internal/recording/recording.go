@@ -2,17 +2,25 @@
 package recording
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // Storage defines the interface for recording storage backends.
@@ -121,9 +129,33 @@ func startsWithDotDot(path string) bool {
 	return path[0] == '.' && path[1] == '.' && (len(path) == 2 || path[2] == filepath.Separator)
 }
 
+// filenameRegex validates recording filenames to prevent injection attacks.
+var filenameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-\.]*\.cast$`)
+
+// validateFilename checks if a filename is safe for storage operations.
+func validateFilename(filename string) error {
+	if filename == "" {
+		return errors.New("filename cannot be empty")
+	}
+	if len(filename) > 255 {
+		return errors.New("filename too long")
+	}
+	if strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+		return errors.New("filename contains path separator")
+	}
+	if strings.Contains(filename, "..") {
+		return errors.New("filename contains directory traversal")
+	}
+	if !filenameRegex.MatchString(filename) {
+		return errors.New("filename contains invalid characters")
+	}
+	return nil
+}
+
 // S3Storage implements Storage using S3-compatible object storage.
 type S3Storage struct {
-	cfg config.S3Config
+	cfg    config.S3Config
+	client *s3.Client
 }
 
 // NewS3Storage creates a new S3Storage instance.
@@ -131,25 +163,234 @@ func NewS3Storage(cfg config.S3Config) (*S3Storage, error) {
 	if cfg.Bucket == "" {
 		return nil, errors.New("S3 bucket cannot be empty")
 	}
-	return &S3Storage{cfg: cfg}, nil
+	if cfg.Region == "" {
+		return nil, errors.New("S3 region cannot be empty")
+	}
+
+	// Validate bucket name to prevent injection.
+	if !isValidBucketName(cfg.Bucket) {
+		return nil, errors.New("invalid S3 bucket name")
+	}
+
+	// Validate prefix if provided.
+	if cfg.Prefix != "" && !isValidPrefix(cfg.Prefix) {
+		return nil, errors.New("invalid S3 prefix")
+	}
+
+	// Build S3 client configuration.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var opts []func(*awsconfig.LoadOptions) error
+
+	// Set region.
+	opts = append(opts, awsconfig.WithRegion(cfg.Region))
+
+	// Set static credentials if provided.
+	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(
+				cfg.AccessKeyID,
+				cfg.SecretAccessKey,
+				"", // session token
+			),
+		))
+	}
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// Build S3 client options.
+	s3Opts := []func(*s3.Options){}
+
+	// Set custom endpoint if provided (for MinIO, etc.).
+	if cfg.Endpoint != "" {
+		// Validate endpoint URL.
+		if _, err := url.Parse(cfg.Endpoint); err != nil {
+			return nil, fmt.Errorf("invalid S3 endpoint URL: %w", err)
+		}
+		s3Opts = append(s3Opts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(cfg.Endpoint)
+		})
+	}
+
+	// Use path-style addressing if required (for MinIO).
+	if cfg.ForcePathStyle {
+		s3Opts = append(s3Opts, func(o *s3.Options) {
+			o.UsePathStyle = true
+		})
+	}
+
+	client := s3.NewFromConfig(awsCfg, s3Opts...)
+
+	return &S3Storage{
+		cfg:    cfg,
+		client: client,
+	}, nil
+}
+
+// isValidBucketName validates S3 bucket name according to AWS rules.
+func isValidBucketName(name string) bool {
+	if len(name) < 3 || len(name) > 63 {
+		return false
+	}
+	// Must start with lowercase letter or number.
+	if !((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= '0' && name[0] <= '9')) {
+		return false
+	}
+	// Only lowercase letters, numbers, and hyphens.
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.') {
+			return false
+		}
+	}
+	// Cannot end with hyphen.
+	if name[len(name)-1] == '-' {
+		return false
+	}
+	return true
+}
+
+// isValidPrefix validates S3 object key prefix.
+func isValidPrefix(prefix string) bool {
+	if len(prefix) > 1024 {
+		return false
+	}
+	// Disallow control characters and some special chars.
+	for _, c := range prefix {
+		if c < 32 || c == '\\' || c == '{' || c == '}' || c == '^' {
+			return false
+		}
+	}
+	return true
+}
+
+// buildObjectKey constructs the full object key from prefix and filename.
+func (s *S3Storage) buildObjectKey(filename string) string {
+	if s.cfg.Prefix == "" {
+		return filename
+	}
+	// Ensure prefix ends with /
+	prefix := s.cfg.Prefix
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return prefix + filename
 }
 
 func (s *S3Storage) Save(ctx context.Context, filename string, data []byte) error {
-	// TODO: Implement S3 upload using AWS SDK or compatible library.
-	// For now, return an error indicating not implemented.
-	return errors.New("S3 storage not yet implemented - use local storage")
+	if err := validateFilename(filename); err != nil {
+		return fmt.Errorf("invalid filename: %w", err)
+	}
+
+	key := s.buildObjectKey(filename)
+
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.cfg.Bucket),
+		Key:         aws.String(key),
+		Body:        bytes.NewReader(data),
+		ContentType: aws.String("application/json"),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upload to S3: %w", err)
+	}
+
+	return nil
 }
 
 func (s *S3Storage) Load(ctx context.Context, filename string) ([]byte, error) {
-	return nil, errors.New("S3 storage not yet implemented - use local storage")
+	if err := validateFilename(filename); err != nil {
+		return nil, fmt.Errorf("invalid filename: %w", err)
+	}
+
+	key := s.buildObjectKey(filename)
+
+	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to download from S3: %w", err)
+	}
+	defer func() { _ = result.Body.Close() }()
+
+	// Limit read size to prevent memory exhaustion (100MB max).
+	const maxSize = 100 * 1024 * 1024
+	limitedReader := io.LimitReader(result.Body, maxSize)
+
+	data, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read S3 object: %w", err)
+	}
+
+	return data, nil
 }
 
 func (s *S3Storage) List(ctx context.Context) ([]string, error) {
-	return nil, errors.New("S3 storage not yet implemented - use local storage")
+	var files []string
+	var continuationToken *string
+
+	prefix := s.cfg.Prefix
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	for {
+		input := &s3.ListObjectsV2Input{
+			Bucket:            aws.String(s.cfg.Bucket),
+			ContinuationToken: continuationToken,
+			MaxKeys:           aws.Int32(1000),
+		}
+		if prefix != "" {
+			input.Prefix = aws.String(prefix)
+		}
+
+		result, err := s.client.ListObjectsV2(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list S3 objects: %w", err)
+		}
+
+		for _, obj := range result.Contents {
+			if obj.Key != nil {
+				// Strip prefix to get just the filename.
+				filename := *obj.Key
+				if prefix != "" && strings.HasPrefix(filename, prefix) {
+					filename = filename[len(prefix):]
+				}
+				// Only include .cast files.
+				if strings.HasSuffix(filename, ".cast") {
+					files = append(files, filename)
+				}
+			}
+		}
+
+		if result.IsTruncated == nil || !*result.IsTruncated {
+			break
+		}
+		continuationToken = result.NextContinuationToken
+	}
+
+	return files, nil
 }
 
 func (s *S3Storage) Delete(ctx context.Context, filename string) error {
-	return errors.New("S3 storage not yet implemented - use local storage")
+	if err := validateFilename(filename); err != nil {
+		return fmt.Errorf("invalid filename: %w", err)
+	}
+
+	key := s.buildObjectKey(filename)
+
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete from S3: %w", err)
+	}
+
+	return nil
 }
 
 // Recorder manages session recordings.

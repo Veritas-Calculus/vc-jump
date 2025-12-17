@@ -17,12 +17,14 @@ recording:
   storage_type: "local"  # "local" or "s3"
   local_path: "./recordings"
   s3:
-    endpoint: ""
-    bucket: ""
-    region: "us-east-1"
-    access_key_id: ""
-    secret_access_key: ""
-    use_ssl: true
+    endpoint: ""           # S3-compatible endpoint (empty for AWS S3)
+    bucket: ""             # Bucket name
+    region: "us-east-1"    # AWS region
+    access_key_id: ""      # Access key ID
+    secret_access_key: ""  # Secret access key
+    use_ssl: true          # Use HTTPS
+    prefix: "recordings"   # Object key prefix for organization
+    force_path_style: false # Use path-style addressing (required for MinIO)
 
 logging:
   level: "info"           # debug, info, warn, error
