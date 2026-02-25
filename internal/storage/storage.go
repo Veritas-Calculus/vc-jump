@@ -119,6 +119,35 @@ type HostPermission struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// RecordingStorageType represents where the recording is stored.
+type RecordingStorageType string
+
+const (
+	RecordingStorageLocal RecordingStorageType = "local"
+	RecordingStorageS3    RecordingStorageType = "s3"
+)
+
+// Recording represents a session recording metadata in storage.
+type Recording struct {
+	ID          string               `json:"id"`
+	SessionID   string               `json:"session_id"`          // Reference to session.
+	Username    string               `json:"username"`            // User who created the recording.
+	HostName    string               `json:"hostname"`            // Target host name.
+	Filename    string               `json:"filename"`            // Recording filename.
+	StorageType RecordingStorageType `json:"storage_type"`        // local or s3.
+	StoragePath string               `json:"storage_path"`        // Local path or S3 bucket/key.
+	S3Bucket    string               `json:"s3_bucket,omitempty"` // S3 bucket name.
+	S3Key       string               `json:"s3_key,omitempty"`    // S3 object key.
+	FileSize    int64                `json:"file_size"`           // Size in bytes.
+	Duration    int64                `json:"duration"`            // Duration in seconds.
+	StartTime   time.Time            `json:"start_time"`          // Recording start time.
+	EndTime     time.Time            `json:"end_time,omitempty"`  // Recording end time.
+	Checksum    string               `json:"checksum,omitempty"`  // SHA256 checksum for integrity.
+	IsComplete  bool                 `json:"is_complete"`         // Whether recording finished normally.
+	CreatedAt   time.Time            `json:"created_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
+}
+
 // Store defines the interface for data persistence.
 type Store interface {
 	// Host operations.
@@ -142,6 +171,14 @@ type Store interface {
 	ListSessions(ctx context.Context, username string, limit int) ([]Session, error)
 	CreateSession(ctx context.Context, session *Session) error
 	UpdateSession(ctx context.Context, session *Session) error
+
+	// Recording operations.
+	GetRecording(ctx context.Context, id string) (*Recording, error)
+	GetRecordingBySessionID(ctx context.Context, sessionID string) (*Recording, error)
+	ListRecordings(ctx context.Context, username string, limit, offset int) ([]Recording, error)
+	CreateRecording(ctx context.Context, recording *Recording) error
+	UpdateRecording(ctx context.Context, recording *Recording) error
+	DeleteRecording(ctx context.Context, id string) error
 
 	// Audit log operations.
 	CreateAuditLog(ctx context.Context, log *AuditLog) error
@@ -468,6 +505,36 @@ func (s *FileStore) CreateAuditLog(ctx context.Context, log *AuditLog) error {
 func (s *FileStore) ListAuditLogs(ctx context.Context, username, eventType string, startTime, endTime time.Time, limit, offset int) ([]AuditLog, error) {
 	// File-based storage does not support audit logs.
 	return []AuditLog{}, nil
+}
+
+// GetRecording is a no-op for FileStore (recordings not supported in file storage).
+func (s *FileStore) GetRecording(ctx context.Context, id string) (*Recording, error) {
+	return nil, errors.New("recordings not supported in file storage")
+}
+
+// GetRecordingBySessionID is a no-op for FileStore (recordings not supported in file storage).
+func (s *FileStore) GetRecordingBySessionID(ctx context.Context, sessionID string) (*Recording, error) {
+	return nil, errors.New("recordings not supported in file storage")
+}
+
+// ListRecordings is a no-op for FileStore (recordings not supported in file storage).
+func (s *FileStore) ListRecordings(ctx context.Context, username string, limit, offset int) ([]Recording, error) {
+	return []Recording{}, nil
+}
+
+// CreateRecording is a no-op for FileStore (recordings not supported in file storage).
+func (s *FileStore) CreateRecording(ctx context.Context, recording *Recording) error {
+	return errors.New("recordings not supported in file storage")
+}
+
+// UpdateRecording is a no-op for FileStore (recordings not supported in file storage).
+func (s *FileStore) UpdateRecording(ctx context.Context, recording *Recording) error {
+	return errors.New("recordings not supported in file storage")
+}
+
+// DeleteRecording is a no-op for FileStore (recordings not supported in file storage).
+func (s *FileStore) DeleteRecording(ctx context.Context, id string) error {
+	return errors.New("recordings not supported in file storage")
 }
 
 func (s *FileStore) Close() error {

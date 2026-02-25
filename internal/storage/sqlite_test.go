@@ -710,6 +710,555 @@ func TestSQLiteStore_AuditLogPagination(t *testing.T) {
 	}
 }
 
+// ============================================================
+// Recording Operations Tests
+// ============================================================
+
+func TestSQLiteStore_RecordingCreate(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	rec := &Recording{
+		Username:    "testuser",
+		HostName:    "server1.example.com",
+		Filename:    "20231201_120000_testuser_abc123.cast",
+		StorageType: RecordingStorageLocal,
+		StoragePath: "/recordings/20231201_120000_testuser_abc123.cast",
+		FileSize:    1024,
+		Duration:    300,
+		StartTime:   time.Now(),
+		IsComplete:  false,
+	}
+
+	err := store.CreateRecording(ctx, rec)
+	if err != nil {
+		t.Fatalf("failed to create recording: %v", err)
+	}
+
+	if rec.ID == "" {
+		t.Error("expected ID to be set after create")
+	}
+}
+
+func TestSQLiteStore_RecordingCreateWithSession(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Create a session first.
+	session := &Session{
+		Username:   "testuser",
+		SourceIP:   "192.168.1.1",
+		TargetHost: "server1.example.com",
+		StartTime:  time.Now(),
+	}
+	if err := store.CreateSession(ctx, session); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	rec := &Recording{
+		SessionID:   session.ID,
+		Username:    "testuser",
+		HostName:    "server1.example.com",
+		Filename:    "20231201_120000_testuser_abc123.cast",
+		StorageType: RecordingStorageLocal,
+		StoragePath: "/recordings/20231201_120000_testuser_abc123.cast",
+		FileSize:    1024,
+		Duration:    300,
+		StartTime:   time.Now(),
+		IsComplete:  false,
+	}
+
+	err := store.CreateRecording(ctx, rec)
+	if err != nil {
+		t.Fatalf("failed to create recording with session: %v", err)
+	}
+
+	if rec.ID == "" {
+		t.Error("expected ID to be set after create")
+	}
+
+	// Verify we can get by session ID.
+	retrieved, err := store.GetRecordingBySessionID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("failed to get recording by session ID: %v", err)
+	}
+	if retrieved.SessionID != session.ID {
+		t.Errorf("SessionID mismatch: got %s, want %s", retrieved.SessionID, session.ID)
+	}
+}
+
+func TestSQLiteStore_RecordingCreateValidation(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	testCases := []struct {
+		name      string
+		recording *Recording
+		expectErr bool
+	}{
+		{
+			name:      "nil recording",
+			recording: nil,
+			expectErr: true,
+		},
+		{
+			name: "empty username",
+			recording: &Recording{
+				HostName:    "server1",
+				Filename:    "test.cast",
+				StorageType: RecordingStorageLocal,
+				StartTime:   time.Now(),
+			},
+			expectErr: true,
+		},
+		{
+			name: "empty hostname",
+			recording: &Recording{
+				Username:    "testuser",
+				Filename:    "test.cast",
+				StorageType: RecordingStorageLocal,
+				StartTime:   time.Now(),
+			},
+			expectErr: true,
+		},
+		{
+			name: "empty filename",
+			recording: &Recording{
+				Username:    "testuser",
+				HostName:    "server1",
+				StorageType: RecordingStorageLocal,
+				StartTime:   time.Now(),
+			},
+			expectErr: true,
+		},
+		{
+			name: "empty storage type",
+			recording: &Recording{
+				Username:  "testuser",
+				HostName:  "server1",
+				Filename:  "test.cast",
+				StartTime: time.Now(),
+			},
+			expectErr: true,
+		},
+		{
+			name: "valid recording",
+			recording: &Recording{
+				Username:    "testuser",
+				HostName:    "server1",
+				Filename:    "test.cast",
+				StorageType: RecordingStorageLocal,
+				StartTime:   time.Now(),
+			},
+			expectErr: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := store.CreateRecording(ctx, tc.recording)
+			if tc.expectErr && err == nil {
+				t.Error("expected error but got none")
+			}
+			if !tc.expectErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSQLiteStore_RecordingGetByID(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	rec := &Recording{
+		Username:    "testuser",
+		HostName:    "server1.example.com",
+		Filename:    "20231201_120000_testuser_abc123.cast",
+		StorageType: RecordingStorageLocal,
+		StoragePath: "/recordings/20231201_120000_testuser_abc123.cast",
+		FileSize:    1024,
+		Duration:    300,
+		StartTime:   time.Now(),
+		Checksum:    "sha256:abc123",
+		IsComplete:  true,
+	}
+
+	if err := store.CreateRecording(ctx, rec); err != nil {
+		t.Fatalf("failed to create recording: %v", err)
+	}
+
+	retrieved, err := store.GetRecording(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("failed to get recording: %v", err)
+	}
+
+	if retrieved.ID != rec.ID {
+		t.Errorf("ID mismatch: got %s, want %s", retrieved.ID, rec.ID)
+	}
+	if retrieved.Username != rec.Username {
+		t.Errorf("Username mismatch: got %s, want %s", retrieved.Username, rec.Username)
+	}
+	if retrieved.HostName != rec.HostName {
+		t.Errorf("HostName mismatch: got %s, want %s", retrieved.HostName, rec.HostName)
+	}
+	if retrieved.StorageType != rec.StorageType {
+		t.Errorf("StorageType mismatch: got %s, want %s", retrieved.StorageType, rec.StorageType)
+	}
+	if retrieved.Checksum != rec.Checksum {
+		t.Errorf("Checksum mismatch: got %s, want %s", retrieved.Checksum, rec.Checksum)
+	}
+}
+
+func TestSQLiteStore_RecordingGetBySessionID(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Create a session first.
+	session := &Session{
+		Username:   "testuser",
+		SourceIP:   "192.168.1.1",
+		TargetHost: "server1.example.com",
+		StartTime:  time.Now(),
+	}
+	if err := store.CreateSession(ctx, session); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	rec := &Recording{
+		SessionID:   session.ID,
+		Username:    "testuser",
+		HostName:    "server1.example.com",
+		Filename:    "test.cast",
+		StorageType: RecordingStorageS3,
+		S3Bucket:    "my-bucket",
+		S3Key:       "recordings/test.cast",
+		StartTime:   time.Now(),
+	}
+
+	if err := store.CreateRecording(ctx, rec); err != nil {
+		t.Fatalf("failed to create recording: %v", err)
+	}
+
+	retrieved, err := store.GetRecordingBySessionID(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("failed to get recording by session ID: %v", err)
+	}
+
+	if retrieved.SessionID != session.ID {
+		t.Errorf("SessionID mismatch: got %s, want %s", retrieved.SessionID, session.ID)
+	}
+	if retrieved.StorageType != RecordingStorageS3 {
+		t.Errorf("StorageType mismatch: got %s, want s3", retrieved.StorageType)
+	}
+	if retrieved.S3Bucket != rec.S3Bucket {
+		t.Errorf("S3Bucket mismatch: got %s, want %s", retrieved.S3Bucket, rec.S3Bucket)
+	}
+	if retrieved.S3Key != rec.S3Key {
+		t.Errorf("S3Key mismatch: got %s, want %s", retrieved.S3Key, rec.S3Key)
+	}
+}
+
+func TestSQLiteStore_RecordingGetNotFound(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	_, err := store.GetRecording(ctx, "nonexistent-id")
+	if err == nil {
+		t.Error("expected error for nonexistent recording")
+	}
+
+	_, err = store.GetRecordingBySessionID(ctx, "nonexistent-session")
+	if err == nil {
+		t.Error("expected error for nonexistent session ID")
+	}
+}
+
+func TestSQLiteStore_RecordingGetEmptyID(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	_, err := store.GetRecording(ctx, "")
+	if err == nil {
+		t.Error("expected error for empty ID")
+	}
+
+	_, err = store.GetRecordingBySessionID(ctx, "")
+	if err == nil {
+		t.Error("expected error for empty session ID")
+	}
+}
+
+func TestSQLiteStore_RecordingList(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Create test recordings.
+	recordings := []*Recording{
+		{Username: "user1", HostName: "server1", Filename: "rec1.cast", StorageType: RecordingStorageLocal, StartTime: time.Now()},
+		{Username: "user1", HostName: "server2", Filename: "rec2.cast", StorageType: RecordingStorageS3, S3Bucket: "bucket", S3Key: "key", StartTime: time.Now()},
+		{Username: "user2", HostName: "server1", Filename: "rec3.cast", StorageType: RecordingStorageLocal, StartTime: time.Now()},
+	}
+
+	for _, rec := range recordings {
+		if err := store.CreateRecording(ctx, rec); err != nil {
+			t.Fatalf("failed to create recording: %v", err)
+		}
+	}
+
+	// List all.
+	list, err := store.ListRecordings(ctx, "", 0, 0)
+	if err != nil {
+		t.Fatalf("failed to list recordings: %v", err)
+	}
+	if len(list) != 3 {
+		t.Errorf("expected 3 recordings, got %d", len(list))
+	}
+
+	// Filter by username.
+	list, err = store.ListRecordings(ctx, "user1", 0, 0)
+	if err != nil {
+		t.Fatalf("failed to list recordings by user: %v", err)
+	}
+	if len(list) != 2 {
+		t.Errorf("expected 2 recordings for user1, got %d", len(list))
+	}
+
+	// Test pagination.
+	list, err = store.ListRecordings(ctx, "", 2, 0)
+	if err != nil {
+		t.Fatalf("failed to list recordings with limit: %v", err)
+	}
+	if len(list) != 2 {
+		t.Errorf("expected 2 recordings with limit, got %d", len(list))
+	}
+
+	list, err = store.ListRecordings(ctx, "", 10, 2)
+	if err != nil {
+		t.Fatalf("failed to list recordings with offset: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("expected 1 recording with offset 2, got %d", len(list))
+	}
+}
+
+func TestSQLiteStore_RecordingUpdate(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	rec := &Recording{
+		Username:    "testuser",
+		HostName:    "server1",
+		Filename:    "test.cast",
+		StorageType: RecordingStorageLocal,
+		StoragePath: "/recordings/test.cast",
+		FileSize:    0,
+		Duration:    0,
+		StartTime:   time.Now(),
+		IsComplete:  false,
+	}
+
+	if err := store.CreateRecording(ctx, rec); err != nil {
+		t.Fatalf("failed to create recording: %v", err)
+	}
+
+	// Update recording.
+	rec.FileSize = 2048
+	rec.Duration = 600
+	rec.EndTime = time.Now()
+	rec.Checksum = "sha256:xyz789"
+	rec.IsComplete = true
+
+	if err := store.UpdateRecording(ctx, rec); err != nil {
+		t.Fatalf("failed to update recording: %v", err)
+	}
+
+	// Verify update.
+	retrieved, err := store.GetRecording(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("failed to get recording: %v", err)
+	}
+
+	if retrieved.FileSize != 2048 {
+		t.Errorf("FileSize mismatch: got %d, want 2048", retrieved.FileSize)
+	}
+	if retrieved.Duration != 600 {
+		t.Errorf("Duration mismatch: got %d, want 600", retrieved.Duration)
+	}
+	if !retrieved.IsComplete {
+		t.Error("IsComplete should be true")
+	}
+	if retrieved.Checksum != "sha256:xyz789" {
+		t.Errorf("Checksum mismatch: got %s, want sha256:xyz789", retrieved.Checksum)
+	}
+}
+
+func TestSQLiteStore_RecordingUpdateValidation(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Update nil recording.
+	err := store.UpdateRecording(ctx, nil)
+	if err == nil {
+		t.Error("expected error for nil recording")
+	}
+
+	// Update recording with empty ID.
+	err = store.UpdateRecording(ctx, &Recording{Username: "test"})
+	if err == nil {
+		t.Error("expected error for empty ID")
+	}
+
+	// Update nonexistent recording.
+	err = store.UpdateRecording(ctx, &Recording{ID: "nonexistent-id", Username: "test", HostName: "host", Filename: "test.cast", StorageType: RecordingStorageLocal})
+	if err == nil {
+		t.Error("expected error for nonexistent recording")
+	}
+}
+
+func TestSQLiteStore_RecordingDelete(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	rec := &Recording{
+		Username:    "testuser",
+		HostName:    "server1",
+		Filename:    "test.cast",
+		StorageType: RecordingStorageLocal,
+		StartTime:   time.Now(),
+	}
+
+	if err := store.CreateRecording(ctx, rec); err != nil {
+		t.Fatalf("failed to create recording: %v", err)
+	}
+
+	// Delete recording.
+	if err := store.DeleteRecording(ctx, rec.ID); err != nil {
+		t.Fatalf("failed to delete recording: %v", err)
+	}
+
+	// Verify deleted.
+	_, err := store.GetRecording(ctx, rec.ID)
+	if err == nil {
+		t.Error("expected error for deleted recording")
+	}
+}
+
+func TestSQLiteStore_RecordingDeleteValidation(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Delete with empty ID.
+	err := store.DeleteRecording(ctx, "")
+	if err == nil {
+		t.Error("expected error for empty ID")
+	}
+
+	// Delete nonexistent.
+	err = store.DeleteRecording(ctx, "nonexistent-id")
+	if err == nil {
+		t.Error("expected error for nonexistent recording")
+	}
+}
+
+func TestSQLiteStore_RecordingCleanup(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	now := time.Now()
+	oldTime := now.Add(-24 * time.Hour)
+
+	// Create old and new recordings.
+	oldRec := &Recording{
+		Username:    "testuser",
+		HostName:    "server1",
+		Filename:    "old.cast",
+		StorageType: RecordingStorageLocal,
+		StartTime:   oldTime,
+	}
+	newRec := &Recording{
+		Username:    "testuser",
+		HostName:    "server1",
+		Filename:    "new.cast",
+		StorageType: RecordingStorageLocal,
+		StartTime:   now,
+	}
+
+	if err := store.CreateRecording(ctx, oldRec); err != nil {
+		t.Fatalf("failed to create old recording: %v", err)
+	}
+	if err := store.CreateRecording(ctx, newRec); err != nil {
+		t.Fatalf("failed to create new recording: %v", err)
+	}
+
+	// Cleanup old recordings.
+	cutoff := now.Add(-12 * time.Hour)
+	deleted, err := store.CleanupRecordings(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("failed to cleanup recordings: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", deleted)
+	}
+
+	// Verify only new recording remains.
+	list, err := store.ListRecordings(ctx, "", 0, 0)
+	if err != nil {
+		t.Fatalf("failed to list recordings: %v", err)
+	}
+	if len(list) != 1 {
+		t.Errorf("expected 1 recording after cleanup, got %d", len(list))
+	}
+}
+
+func TestSQLiteStore_RecordingS3Fields(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	rec := &Recording{
+		Username:    "testuser",
+		HostName:    "server1",
+		Filename:    "test.cast",
+		StorageType: RecordingStorageS3,
+		S3Bucket:    "my-recordings-bucket",
+		S3Key:       "recordings/2024/01/test.cast",
+		StartTime:   time.Now(),
+	}
+
+	if err := store.CreateRecording(ctx, rec); err != nil {
+		t.Fatalf("failed to create S3 recording: %v", err)
+	}
+
+	retrieved, err := store.GetRecording(ctx, rec.ID)
+	if err != nil {
+		t.Fatalf("failed to get recording: %v", err)
+	}
+
+	if retrieved.StorageType != RecordingStorageS3 {
+		t.Errorf("StorageType mismatch: got %s, want s3", retrieved.StorageType)
+	}
+	if retrieved.S3Bucket != "my-recordings-bucket" {
+		t.Errorf("S3Bucket mismatch: got %s, want my-recordings-bucket", retrieved.S3Bucket)
+	}
+	if retrieved.S3Key != "recordings/2024/01/test.cast" {
+		t.Errorf("S3Key mismatch: got %s", retrieved.S3Key)
+	}
+}
+
 // Cleanup test files.
 func TestMain(m *testing.M) {
 	code := m.Run()

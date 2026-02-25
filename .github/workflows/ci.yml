@@ -70,7 +70,7 @@ jobs:
           cache: true
 
       - name: Run Gosec
-        uses: securego/gosec@master
+        uses: securego/gosec@v2.23.0
         with:
           args: '-no-fail -fmt sarif -out results.sarif ./...'
 
@@ -118,3 +118,60 @@ jobs:
         with:
           name: vc-jump-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [test]
+    services:
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3
+          DEBUG: 0
+          DATA_DIR: /tmp/localstack/data
+        options: >-
+          --health-cmd "curl -f http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Wait for LocalStack
+        run: |
+          echo "Waiting for LocalStack to be ready..."
+          for i in {1..30}; do
+            if curl -s http://localhost:4566/_localstack/health | grep -q '"s3": "running"'; then
+              echo "LocalStack S3 is ready"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+      - name: Create S3 test bucket
+        run: |
+          pip install awscli-local
+          awslocal s3 mb s3://test-recordings
+
+      - name: Run integration tests
+        env:
+          TEST_S3_ENDPOINT: http://localhost:4566
+          TEST_S3_BUCKET: test-recordings
+          TEST_S3_REGION: us-east-1
+          TEST_S3_ACCESS_KEY: test
+          TEST_S3_SECRET_KEY: test
+          TEST_S3_FORCE_PATH_STYLE: "true"
+          TEST_DB_PATH: /tmp/test-vc-jump.db
+        run: go test -v -tags=integration -timeout=10m ./...
