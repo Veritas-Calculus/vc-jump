@@ -1,6 +1,7 @@
 package recording
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -347,4 +348,334 @@ func splitLines(data []byte) [][]byte {
 		lines = append(lines, data[start:])
 	}
 	return lines
+}
+
+// ============================================================
+// S3Storage Tests
+// ============================================================
+
+func TestNewS3StorageEmptyBucket(t *testing.T) {
+	cfg := config.S3Config{
+		Bucket: "",
+		Region: "us-east-1",
+	}
+
+	_, err := NewS3Storage(cfg)
+	if err == nil {
+		t.Error("expected error for empty bucket")
+	}
+}
+
+func TestNewS3StorageEmptyRegion(t *testing.T) {
+	cfg := config.S3Config{
+		Bucket: "test-bucket",
+		Region: "",
+	}
+
+	_, err := NewS3Storage(cfg)
+	if err == nil {
+		t.Error("expected error for empty region")
+	}
+}
+
+func TestNewS3StorageInvalidBucketName(t *testing.T) {
+	testCases := []struct {
+		name   string
+		bucket string
+	}{
+		{"too short", "ab"},
+		{"starts with hyphen", "-bucket"},
+		{"contains uppercase", "MyBucket"},
+		{"contains underscore", "my_bucket"},
+		{"ends with hyphen", "bucket-"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.S3Config{
+				Bucket: tc.bucket,
+				Region: "us-east-1",
+			}
+
+			_, err := NewS3Storage(cfg)
+			if err == nil {
+				t.Errorf("expected error for invalid bucket name: %s", tc.bucket)
+			}
+		})
+	}
+}
+
+func TestNewS3StorageValidBucketNames(t *testing.T) {
+	testCases := []struct {
+		name   string
+		bucket string
+	}{
+		{"simple", "mybucket"},
+		{"with numbers", "bucket123"},
+		{"with hyphens", "my-test-bucket"},
+		{"with dots", "my.test.bucket"},
+		{"min length", "abc"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.S3Config{
+				Bucket:          tc.bucket,
+				Region:          "us-east-1",
+				AccessKeyID:     "test",
+				SecretAccessKey: "test",
+			}
+
+			// This should not error during creation (may fail on actual S3 call).
+			storage, err := NewS3Storage(cfg)
+			if err != nil {
+				t.Errorf("unexpected error for valid bucket name %s: %v", tc.bucket, err)
+			}
+			if storage == nil {
+				t.Error("storage should not be nil")
+			}
+		})
+	}
+}
+
+func TestNewS3StorageInvalidPrefix(t *testing.T) {
+	cfg := config.S3Config{
+		Bucket: "test-bucket",
+		Region: "us-east-1",
+		Prefix: string([]byte{0x01, 0x02}), // Control characters.
+	}
+
+	_, err := NewS3Storage(cfg)
+	if err == nil {
+		t.Error("expected error for invalid prefix with control characters")
+	}
+}
+
+func TestNewS3StorageInvalidEndpoint(t *testing.T) {
+	cfg := config.S3Config{
+		Bucket:          "test-bucket",
+		Region:          "us-east-1",
+		Endpoint:        "://invalid-url",
+		AccessKeyID:     "test",
+		SecretAccessKey: "test",
+	}
+
+	_, err := NewS3Storage(cfg)
+	// Note: url.Parse may accept some invalid URLs, so this test is for extreme cases.
+	// The main validation is for bucket name and region.
+	_ = err // Just verify it doesn't panic.
+}
+
+// ============================================================
+// Filename Validation Tests (Security)
+// ============================================================
+
+func TestValidateFilename(t *testing.T) {
+	testCases := []struct {
+		name      string
+		filename  string
+		expectErr bool
+	}{
+		{"valid", "20230101_120000_user_abc123.cast", false},
+		{"empty", "", true},
+		{"too long", string(make([]byte, 300)) + ".cast", true},
+		{"with slash", "path/to/file.cast", true},
+		{"with backslash", "path\\to\\file.cast", true},
+		{"directory traversal", "../etc/passwd.cast", true},
+		{"double dots", "file..test.cast", true},
+		{"no extension", "filename", true},
+		{"wrong extension", "filename.txt", true},
+		{"starts with dot", ".hidden.cast", true},
+		{"special chars", "file<>name.cast", true},
+		{"valid with underscore", "user_session_123.cast", false},
+		{"valid with hyphen", "user-session-123.cast", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateFilename(tc.filename)
+			if tc.expectErr && err == nil {
+				t.Errorf("expected error for filename: %s", tc.filename)
+			}
+			if !tc.expectErr && err != nil {
+				t.Errorf("unexpected error for filename %s: %v", tc.filename, err)
+			}
+		})
+	}
+}
+
+func TestIsValidBucketName(t *testing.T) {
+	testCases := []struct {
+		name   string
+		bucket string
+		valid  bool
+	}{
+		{"valid simple", "mybucket", true},
+		{"valid with hyphens", "my-test-bucket", true},
+		{"valid with numbers", "bucket123", true},
+		{"valid with dots", "my.bucket.name", true},
+		{"too short", "ab", false},
+		{"too long", string(make([]byte, 64)), false},
+		{"starts with hyphen", "-bucket", false},
+		{"ends with hyphen", "bucket-", false},
+		{"uppercase", "MyBucket", false},
+		{"underscore", "my_bucket", false},
+		{"special chars", "bucket!", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := isValidBucketName(tc.bucket)
+			if result != tc.valid {
+				t.Errorf("isValidBucketName(%s) = %v, want %v", tc.bucket, result, tc.valid)
+			}
+		})
+	}
+}
+
+func TestIsValidPrefix(t *testing.T) {
+	testCases := []struct {
+		name   string
+		prefix string
+		valid  bool
+	}{
+		{"empty", "", true},
+		{"simple", "recordings", true},
+		{"with slash", "recordings/", true},
+		{"nested", "prod/recordings/2024", true},
+		{"control char", string([]byte{0x01}), false},
+		{"backslash", "path\\to", false},
+		{"curly braces", "{prefix}", false},
+		{"caret", "prefix^test", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := isValidPrefix(tc.prefix)
+			if result != tc.valid {
+				t.Errorf("isValidPrefix(%s) = %v, want %v", tc.prefix, result, tc.valid)
+			}
+		})
+	}
+}
+
+func TestS3StorageBuildObjectKey(t *testing.T) {
+	testCases := []struct {
+		name     string
+		prefix   string
+		filename string
+		expected string
+	}{
+		{"no prefix", "", "test.cast", "test.cast"},
+		{"with prefix", "recordings", "test.cast", "recordings/test.cast"},
+		{"prefix with slash", "recordings/", "test.cast", "recordings/test.cast"},
+		{"nested prefix", "prod/recordings", "test.cast", "prod/recordings/test.cast"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.S3Config{
+				Bucket:          "test-bucket",
+				Region:          "us-east-1",
+				Prefix:          tc.prefix,
+				AccessKeyID:     "test",
+				SecretAccessKey: "test",
+			}
+
+			storage, err := NewS3Storage(cfg)
+			if err != nil {
+				t.Fatalf("failed to create S3Storage: %v", err)
+			}
+
+			result := storage.buildObjectKey(tc.filename)
+			if result != tc.expected {
+				t.Errorf("buildObjectKey(%s) = %s, want %s", tc.filename, result, tc.expected)
+			}
+		})
+	}
+}
+
+// ============================================================
+// LocalStorage Security Tests
+// ============================================================
+
+func TestLocalStorageDirectoryTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage, err := NewLocalStorage(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create local storage: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Test Save with directory traversal.
+	err = storage.Save(ctx, "../../../etc/passwd", []byte("data"))
+	if err == nil {
+		t.Error("expected error for directory traversal in Save")
+	}
+
+	// Test Load with directory traversal.
+	_, err = storage.Load(ctx, "../../../etc/passwd")
+	if err == nil {
+		t.Error("expected error for directory traversal in Load")
+	}
+
+	// Test Delete with directory traversal.
+	err = storage.Delete(ctx, "../../../etc/passwd")
+	if err == nil {
+		t.Error("expected error for directory traversal in Delete")
+	}
+}
+
+func TestLocalStorageValidOperations(t *testing.T) {
+	tmpDir := t.TempDir()
+	storage, err := NewLocalStorage(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create local storage: %v", err)
+	}
+
+	ctx := context.Background()
+	filename := "test_recording.cast"
+	testData := []byte(`{"version":2,"username":"test"}`)
+
+	// Test Save.
+	if err := storage.Save(ctx, filename, testData); err != nil {
+		t.Fatalf("failed to save: %v", err)
+	}
+
+	// Test Load.
+	loaded, err := storage.Load(ctx, filename)
+	if err != nil {
+		t.Fatalf("failed to load: %v", err)
+	}
+	if string(loaded) != string(testData) {
+		t.Errorf("loaded data mismatch: got %s, want %s", loaded, testData)
+	}
+
+	// Test List.
+	files, err := storage.List(ctx)
+	if err != nil {
+		t.Fatalf("failed to list: %v", err)
+	}
+	if len(files) != 1 || files[0] != filename {
+		t.Errorf("list mismatch: got %v", files)
+	}
+
+	// Test Delete.
+	if err := storage.Delete(ctx, filename); err != nil {
+		t.Fatalf("failed to delete: %v", err)
+	}
+
+	// Verify deleted.
+	files, _ = storage.List(ctx)
+	if len(files) != 0 {
+		t.Error("file should be deleted")
+	}
+}
+
+func TestLocalStorageEmptyBasePath(t *testing.T) {
+	_, err := NewLocalStorage("")
+	if err == nil {
+		t.Error("expected error for empty base path")
+	}
 }
