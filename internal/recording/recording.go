@@ -237,12 +237,12 @@ func isValidBucketName(name string) bool {
 		return false
 	}
 	// Must start with lowercase letter or number.
-	if !((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= '0' && name[0] <= '9')) {
+	if (name[0] < 'a' || name[0] > 'z') && (name[0] < '0' || name[0] > '9') {
 		return false
 	}
 	// Only lowercase letters, numbers, and hyphens.
 	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '.' {
 			return false
 		}
 	}

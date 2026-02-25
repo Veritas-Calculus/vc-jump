@@ -533,6 +533,7 @@ func TestScenario_HostManagement(t *testing.T) {
 
 	t.Run("ListHostsInFolder", func(t *testing.T) {
 		folder := storage.Folder{
+			ID:   "staging-folder-id",
 			Name: "Staging",
 			Path: "/staging",
 		}
