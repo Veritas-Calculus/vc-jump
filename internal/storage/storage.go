@@ -130,20 +130,20 @@ const (
 // Recording represents a session recording metadata in storage.
 type Recording struct {
 	ID          string               `json:"id"`
-	SessionID   string               `json:"session_id"`             // Reference to session.
-	Username    string               `json:"username"`               // User who created the recording.
-	HostName    string               `json:"hostname"`               // Target host name.
-	Filename    string               `json:"filename"`               // Recording filename.
-	StorageType RecordingStorageType `json:"storage_type"`           // local or s3.
-	StoragePath string               `json:"storage_path"`           // Local path or S3 bucket/key.
-	S3Bucket    string               `json:"s3_bucket,omitempty"`    // S3 bucket name.
-	S3Key       string               `json:"s3_key,omitempty"`       // S3 object key.
-	FileSize    int64                `json:"file_size"`              // Size in bytes.
-	Duration    int64                `json:"duration"`               // Duration in seconds.
-	StartTime   time.Time            `json:"start_time"`             // Recording start time.
-	EndTime     time.Time            `json:"end_time,omitempty"`     // Recording end time.
-	Checksum    string               `json:"checksum,omitempty"`     // SHA256 checksum for integrity.
-	IsComplete  bool                 `json:"is_complete"`            // Whether recording finished normally.
+	SessionID   string               `json:"session_id"`          // Reference to session.
+	Username    string               `json:"username"`            // User who created the recording.
+	HostName    string               `json:"hostname"`            // Target host name.
+	Filename    string               `json:"filename"`            // Recording filename.
+	StorageType RecordingStorageType `json:"storage_type"`        // local or s3.
+	StoragePath string               `json:"storage_path"`        // Local path or S3 bucket/key.
+	S3Bucket    string               `json:"s3_bucket,omitempty"` // S3 bucket name.
+	S3Key       string               `json:"s3_key,omitempty"`    // S3 object key.
+	FileSize    int64                `json:"file_size"`           // Size in bytes.
+	Duration    int64                `json:"duration"`            // Duration in seconds.
+	StartTime   time.Time            `json:"start_time"`          // Recording start time.
+	EndTime     time.Time            `json:"end_time,omitempty"`  // Recording end time.
+	Checksum    string               `json:"checksum,omitempty"`  // SHA256 checksum for integrity.
+	IsComplete  bool                 `json:"is_complete"`         // Whether recording finished normally.
 	CreatedAt   time.Time            `json:"created_at"`
 	UpdatedAt   time.Time            `json:"updated_at"`
 }
