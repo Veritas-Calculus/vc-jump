@@ -1053,16 +1053,16 @@ func (s *Server) handleRecording(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		// Return recording content.
-		data, err := os.ReadFile(filePath) // #nosec G304 -- path validated by isPathWithinBase
+		data, err := os.ReadFile(filePath) // #nosec G304 G703 -- path validated by isPathWithinBase
 		if err != nil {
 			s.jsonError(w, "recording not found", http.StatusNotFound)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(data)
+		_, _ = w.Write(data) // #nosec G705 -- served as application/json with nosniff
 
 	case http.MethodDelete:
-		if err := os.Remove(filePath); err != nil {
+		if err := os.Remove(filePath); err != nil { // #nosec G703 -- path validated by isPathWithinBase
 			s.jsonError(w, "failed to delete recording", http.StatusInternalServerError)
 			return
 		}
