@@ -82,7 +82,7 @@ func TestGenerateAPIKeyToken(t *testing.T) {
 	// Hex portion should only contain valid hex chars.
 	hexPart := token[4:]
 	for _, c := range hexPart {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("invalid hex char '%c' in token", c)
 		}
 	}

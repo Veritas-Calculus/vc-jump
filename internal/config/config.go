@@ -110,7 +110,7 @@ type DashboardConfig struct {
 	Enabled        bool   `yaml:"enabled"`
 	ListenAddr     string `yaml:"listen_addr"`
 	Username       string `yaml:"username"`
-	Password       string `yaml:"password"`
+	Password       string `yaml:"password"` //nolint:gosec // G117: intentional password config field
 	EnableHTTPS    bool   `yaml:"enable_https"`
 	CertFile       string `yaml:"cert_file"`
 	KeyFile        string `yaml:"key_file"`

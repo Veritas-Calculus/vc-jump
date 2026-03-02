@@ -11,7 +11,7 @@ import (
 // OTP API request/response types.
 
 type otpSetupResponse struct {
-	Secret     string `json:"secret"`
+	Secret     string `json:"secret"`  //nolint:gosec // G117: OTP secret is intentional API response
 	QRCode     string `json:"qr_code"` // Base64 encoded PNG.
 	OTPAuthURL string `json:"otpauth_url"`
 }

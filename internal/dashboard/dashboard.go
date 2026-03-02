@@ -307,7 +307,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Username string `json:"username"`
-		Password string `json:"password"`
+		Password string `json:"password"` //nolint:gosec // G117: login request field
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -534,7 +534,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		var req struct {
 			Username     string   `json:"username"`
-			Password     string   `json:"password"`
+			Password     string   `json:"password"` //nolint:gosec // G117: create user request field
 			Groups       []string `json:"groups"`
 			AllowedHosts []string `json:"allowed_hosts"`
 			RoleID       string   `json:"role_id"`
@@ -1036,7 +1036,7 @@ func (s *Server) handleRecordingsBatchDelete(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 
-		if err := os.Remove(filePath); err != nil {
+		if err := os.Remove(filePath); err != nil { //nolint:gosec // G703: path already validated by isPathWithinBase
 			if os.IsNotExist(err) {
 				resp.Failed[filename] = "file not found"
 			} else {
@@ -1182,7 +1182,7 @@ func startsWithDotDot(path string) bool {
 }
 
 // logAudit logs an audit event to SQLite storage.
-func (s *Server) logAudit(eventType, username, sourceIP, targetHost, action, result string, details map[string]interface{}) {
+func (s *Server) logAudit(eventType, username, sourceIP, targetHost, action, result string, details map[string]interface{}) { //nolint:unparam // targetHost reserved for SSH session audit
 	if s.store == nil {
 		return
 	}

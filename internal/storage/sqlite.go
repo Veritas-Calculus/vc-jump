@@ -1043,7 +1043,7 @@ func (s *SQLiteStore) Close() error {
 type SSHKey struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
-	PrivateKey  string    `json:"private_key"`
+	PrivateKey  string    `json:"private_key"` //nolint:gosec // G117: SSH private key storage field
 	PublicKey   string    `json:"public_key"`
 	Fingerprint string    `json:"fingerprint"`
 	KeyType     string    `json:"key_type"`

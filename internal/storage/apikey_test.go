@@ -372,7 +372,7 @@ func TestApiKey_NilScopes(t *testing.T) {
 
 	got, _ := store.GetApiKey(ctx, key.ID)
 	// nil scopes marshalled as "null" should unmarshal to nil.
-	if got.Scopes != nil && len(got.Scopes) != 0 {
+	if len(got.Scopes) != 0 {
 		t.Errorf("expected nil or empty scopes, got %v", got.Scopes)
 	}
 }
