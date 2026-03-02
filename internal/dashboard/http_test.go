@@ -930,3 +930,30 @@ func TestHTTP_DeprecatedEndpointHeaders(t *testing.T) {
 		t.Error("Link header should be set for deprecated endpoints")
 	}
 }
+
+// =============================================================================
+// Health check tests
+// =============================================================================
+
+func TestHTTP_HealthCheck(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	t.Run("healthz always returns 200", func(t *testing.T) {
+		rr := h.doNoAuth(http.MethodGet, "/healthz", nil)
+		h.assertStatus(rr, http.StatusOK)
+		if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+	})
+
+	t.Run("readyz returns 200 when DB is ready", func(t *testing.T) {
+		rr := h.doNoAuth(http.MethodGet, "/readyz", nil)
+		h.assertStatus(rr, http.StatusOK)
+	})
+
+	t.Run("healthz no auth required", func(t *testing.T) {
+		rr := h.doNoAuth(http.MethodGet, "/healthz", nil)
+		h.assertStatus(rr, http.StatusOK)
+	})
+}

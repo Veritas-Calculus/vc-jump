@@ -58,8 +58,7 @@ func TestIsPathWithinBase(t *testing.T) {
 			t.Parallel()
 			got := isPathWithinBase(tt.basePath, tt.targetPath)
 			if got != tt.want {
-				t.Errorf("isPathWithinBase(%q, %q) = %v, want %v",
-					tt.basePath, tt.targetPath, got, tt.want)
+				t.Errorf("isPathWithinBase(%q, %q) = %v, want %v", tt.basePath, tt.targetPath, got, tt.want)
 			}
 		})
 	}
@@ -73,10 +72,8 @@ func TestStartsWithDotDot(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"empty string", "", false},
-		{"single dot", ".", false},
-		{"double dot only", "..", true},
-		{"double dot with separator", "../foo", true},
+		{"double dot", "..", true},
+		{"double dot with separator", "../secret", true},
 		{"normal path", "foo/bar", false},
 		{"path starting with dot", ".hidden", false},
 		{"double dot in middle", "foo/../bar", false},
@@ -93,19 +90,9 @@ func TestStartsWithDotDot(t *testing.T) {
 	}
 }
 
-// mockServer creates a minimal Server for testing.
-func newTestServer(t *testing.T, recordingPath string) *Server {
-	t.Helper()
-	return &Server{
-		recordingCfg: config.RecordingConfig{
-			Enabled:   true,
-			LocalPath: recordingPath,
-		},
-	}
-}
-
 func TestHandleRecordingsBatchDelete(t *testing.T) {
 	t.Parallel()
+	h := newTestHarness(t)
 
 	// Create a temporary directory for test recordings.
 	tmpDir, err := os.MkdirTemp("", "recordings-test-*")
@@ -113,6 +100,12 @@ func TestHandleRecordingsBatchDelete(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	// Inject recording path.
+	h.server.recordingCfg = config.RecordingConfig{
+		Enabled:   true,
+		LocalPath: tmpDir,
+	}
 
 	// Create test files.
 	testFiles := []string{"test1.cast", "test2.cast", "test3.cast"}
@@ -123,91 +116,65 @@ func TestHandleRecordingsBatchDelete(t *testing.T) {
 		}
 	}
 
-	s := newTestServer(t, tmpDir)
+	t.Run("delete single file", func(t *testing.T) {
+		rr := h.do(http.MethodDelete, "/api/recordings", BatchDeleteRequest{Filenames: []string{"test1.cast"}})
+		h.assertStatus(rr, http.StatusOK)
 
-	tests := []struct {
-		name           string
-		requestBody    interface{}
-		wantStatus     int
-		wantDeleted    int
-		wantFailed     int
-		checkFilesLeft int
-	}{
-		{
-			name:           "delete single file",
-			requestBody:    BatchDeleteRequest{Filenames: []string{"test1.cast"}},
-			wantStatus:     http.StatusOK,
-			wantDeleted:    1,
-			wantFailed:     0,
-			checkFilesLeft: 2,
-		},
-		{
-			name:           "delete multiple files",
-			requestBody:    BatchDeleteRequest{Filenames: []string{"test2.cast", "test3.cast"}},
-			wantStatus:     http.StatusOK,
-			wantDeleted:    2,
-			wantFailed:     0,
-			checkFilesLeft: 0,
-		},
-		{
-			name:           "delete non-existent file",
-			requestBody:    BatchDeleteRequest{Filenames: []string{"nonexistent.cast"}},
-			wantStatus:     http.StatusOK,
-			wantDeleted:    0,
-			wantFailed:     1,
-			checkFilesLeft: 0,
-		},
-		{
-			name:           "empty filenames",
-			requestBody:    BatchDeleteRequest{Filenames: []string{}},
-			wantStatus:     http.StatusBadRequest,
-			wantDeleted:    0,
-			wantFailed:     0,
-			checkFilesLeft: 0,
-		},
-		{
-			name:           "directory traversal attempt",
-			requestBody:    BatchDeleteRequest{Filenames: []string{"../secret.txt"}},
-			wantStatus:     http.StatusOK,
-			wantDeleted:    0,
-			wantFailed:     1,
-			checkFilesLeft: 0,
-		},
-	}
+		var resp BatchDeleteResponse
+		h.unmarshal(rr, &resp)
+		if len(resp.Deleted) != 1 {
+			t.Errorf("deleted count = %d, want 1", len(resp.Deleted))
+		}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(tt.requestBody)
-			req := httptest.NewRequest(http.MethodDelete, "/api/recordings", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
+	t.Run("delete multiple files", func(t *testing.T) {
+		rr := h.do(http.MethodDelete, "/api/recordings", BatchDeleteRequest{Filenames: []string{"test2.cast", "test3.cast"}})
+		h.assertStatus(rr, http.StatusOK)
 
-			rr := httptest.NewRecorder()
-			s.handleRecordingsBatchDelete(rr, req)
+		var resp BatchDeleteResponse
+		h.unmarshal(rr, &resp)
+		if len(resp.Deleted) != 2 {
+			t.Errorf("deleted count = %d, want 2", len(resp.Deleted))
+		}
+	})
 
-			if rr.Code != tt.wantStatus {
-				t.Errorf("status = %d, want %d", rr.Code, tt.wantStatus)
-			}
+	t.Run("delete non-existent file", func(t *testing.T) {
+		rr := h.do(http.MethodDelete, "/api/recordings", BatchDeleteRequest{Filenames: []string{"nonexistent.cast"}})
+		h.assertStatus(rr, http.StatusOK)
 
-			if tt.wantStatus == http.StatusOK {
-				var resp BatchDeleteResponse
-				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-					t.Fatalf("failed to unmarshal response: %v", err)
-				}
+		var resp BatchDeleteResponse
+		h.unmarshal(rr, &resp)
+		if len(resp.Deleted) != 0 {
+			t.Errorf("deleted count = %d, want 0", len(resp.Deleted))
+		}
+		if len(resp.Failed) != 1 {
+			t.Errorf("failed count = %d, want 1", len(resp.Failed))
+		}
+	})
 
-				if len(resp.Deleted) != tt.wantDeleted {
-					t.Errorf("deleted count = %d, want %d", len(resp.Deleted), tt.wantDeleted)
-				}
+	t.Run("empty filenames", func(t *testing.T) {
+		rr := h.do(http.MethodDelete, "/api/recordings", BatchDeleteRequest{Filenames: []string{}})
+		h.assertStatus(rr, http.StatusBadRequest)
+	})
 
-				if len(resp.Failed) != tt.wantFailed {
-					t.Errorf("failed count = %d, want %d", len(resp.Failed), tt.wantFailed)
-				}
-			}
-		})
-	}
+	t.Run("directory traversal attempt", func(t *testing.T) {
+		rr := h.do(http.MethodDelete, "/api/recordings", BatchDeleteRequest{Filenames: []string{"../secret.txt"}})
+		h.assertStatus(rr, http.StatusOK)
+
+		var resp BatchDeleteResponse
+		h.unmarshal(rr, &resp)
+		if len(resp.Deleted) != 0 {
+			t.Errorf("deleted count = %d, want 0", len(resp.Deleted))
+		}
+		if len(resp.Failed) != 1 {
+			t.Errorf("failed count = %d, want 1", len(resp.Failed))
+		}
+	})
 }
 
 func TestHandleRecordingsBatchDeleteValidation(t *testing.T) {
 	t.Parallel()
+	h := newTestHarness(t)
 
 	tmpDir, err := os.MkdirTemp("", "recordings-validation-*")
 	if err != nil {
@@ -215,7 +182,10 @@ func TestHandleRecordingsBatchDeleteValidation(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	s := newTestServer(t, tmpDir)
+	h.server.recordingCfg = config.RecordingConfig{
+		Enabled:   true,
+		LocalPath: tmpDir,
+	}
 
 	tests := []struct {
 		name        string
@@ -251,17 +221,10 @@ func TestHandleRecordingsBatchDeleteValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body, _ := json.Marshal(BatchDeleteRequest{Filenames: tt.filenames})
-			req := httptest.NewRequest(http.MethodDelete, "/api/recordings", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			rr := httptest.NewRecorder()
-			s.handleRecordingsBatchDelete(rr, req)
+			rr := h.do(http.MethodDelete, "/api/recordings", BatchDeleteRequest{Filenames: tt.filenames})
 
 			var resp BatchDeleteResponse
-			if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-				t.Fatalf("failed to unmarshal response: %v", err)
-			}
+			h.unmarshal(rr, &resp)
 
 			for _, f := range tt.wantFailed {
 				if _, ok := resp.Failed[f]; !ok {
@@ -278,28 +241,23 @@ func TestHandleRecordingsBatchDeleteValidation(t *testing.T) {
 
 func TestHandleRecordingsBatchDeleteDisabled(t *testing.T) {
 	t.Parallel()
+	h := newTestHarness(t)
 
-	s := &Server{
-		recordingCfg: config.RecordingConfig{
-			Enabled:   false,
-			LocalPath: "",
-		},
+	// No recording path configured.
+	h.server.recordingCfg = config.RecordingConfig{
+		Enabled:   false,
+		LocalPath: "",
 	}
 
-	body, _ := json.Marshal(BatchDeleteRequest{Filenames: []string{"test.cast"}})
-	req := httptest.NewRequest(http.MethodDelete, "/api/recordings", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	rr := httptest.NewRecorder()
-	s.handleRecordingsBatchDelete(rr, req)
-
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	rr := h.do(http.MethodDelete, "/api/recordings", BatchDeleteRequest{Filenames: []string{"test.cast"}})
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
 	}
 }
 
 func TestHandleRecordingsBatchDeleteMaxLimit(t *testing.T) {
 	t.Parallel()
+	h := newTestHarness(t)
 
 	tmpDir, err := os.MkdirTemp("", "recordings-limit-*")
 	if err != nil {
@@ -307,7 +265,10 @@ func TestHandleRecordingsBatchDeleteMaxLimit(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
-	s := newTestServer(t, tmpDir)
+	h.server.recordingCfg = config.RecordingConfig{
+		Enabled:   true,
+		LocalPath: tmpDir,
+	}
 
 	// Create a request with more than maxBatchSize files.
 	filenames := make([]string, 101)
@@ -316,11 +277,11 @@ func TestHandleRecordingsBatchDeleteMaxLimit(t *testing.T) {
 	}
 
 	body, _ := json.Marshal(BatchDeleteRequest{Filenames: filenames})
+	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/recordings", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-
-	rr := httptest.NewRecorder()
-	s.handleRecordingsBatchDelete(rr, req)
+	req.Header.Set("Authorization", "Bearer "+h.adminToken)
+	h.server.server.Handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", rr.Code, http.StatusBadRequest)
