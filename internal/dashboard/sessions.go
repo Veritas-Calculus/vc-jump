@@ -3,6 +3,7 @@ package dashboard
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -97,6 +98,64 @@ func (s *Server) handleActiveSessions(w http.ResponseWriter, r *http.Request) {
 		activeSessions = []interface{}{}
 	}
 	s.jsonResponse(w, activeSessions)
+}
+
+// handleTerminateSession terminates an active session.
+// DELETE /api/sessions/active/:id
+func (s *Server) handleTerminateSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		s.jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !s.hasPermission(r, "session:terminate") {
+		s.jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	sessionID := strings.TrimPrefix(r.URL.Path, "/api/sessions/active/")
+	if sessionID == "" {
+		s.jsonError(w, "session id required", http.StatusBadRequest)
+		return
+	}
+
+	// Get session from DB.
+	session, err := s.store.GetSession(r.Context(), sessionID)
+	if err != nil {
+		s.jsonError(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	// Check if session is actually active (no end time).
+	if !session.EndTime.IsZero() {
+		s.jsonError(w, "session is not active", http.StatusConflict)
+		return
+	}
+
+	// Mark session as ended in DB.
+	session.EndTime = time.Now()
+	if err := s.store.UpdateSession(r.Context(), session); err != nil {
+		s.jsonError(w, "failed to terminate session", http.StatusInternalServerError)
+		return
+	}
+
+	// Audit log.
+	userID := r.Context().Value(contextKeyUserID).(string)
+	user, _ := s.store.GetUser(r.Context(), userID)
+	username := userID
+	if user != nil {
+		username = user.Username
+	}
+	s.logAudit("session_terminate", username, getClientIP(r), session.TargetHost,
+		"terminate session "+sessionID, "success", map[string]interface{}{
+			"terminated_user": session.Username,
+			"session_id":      sessionID,
+		})
+
+	s.jsonResponse(w, map[string]string{
+		"status":     "terminated",
+		"session_id": sessionID,
+	})
 }
 
 // handleLiveSessions returns list of live recording sessions that can be watched.

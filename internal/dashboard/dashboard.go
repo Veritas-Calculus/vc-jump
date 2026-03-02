@@ -136,6 +136,7 @@ func (s *Server) setupRoutes() {
 
 	// Host management.
 	s.mux.HandleFunc("/api/hosts", s.requireAuth(s.handleHosts))
+	s.mux.HandleFunc("/api/hosts/import", s.requireAuth(s.handleHostImport))
 	s.mux.HandleFunc("/api/hosts/", s.requireAuth(s.handleHost))
 
 	// User management.
@@ -149,6 +150,7 @@ func (s *Server) setupRoutes() {
 	// Session management.
 	s.mux.HandleFunc("/api/sessions", s.requireAuth(s.handleSessions))
 	s.mux.HandleFunc("/api/sessions/active", s.requireAuth(s.handleActiveSessions))
+	s.mux.HandleFunc("/api/sessions/active/", s.requireAuth(s.handleTerminateSession))
 	s.mux.HandleFunc("/api/sessions/live", s.requireAuth(s.handleLiveSessions))
 	s.mux.HandleFunc("/api/sessions/watch/", s.requireAuth(s.handleWatchSession))
 
@@ -187,6 +189,7 @@ func (s *Server) setupRoutes() {
 
 	// Audit logs.
 	s.mux.HandleFunc("/api/audit", s.requireAuth(s.handleAuditLogs))
+	s.mux.HandleFunc("/api/audit/export", s.requireAuth(s.handleAuditExport))
 	s.mux.HandleFunc("/api/audit/stats", s.requireAuth(s.handleAuditStats))
 
 	// API Key management.

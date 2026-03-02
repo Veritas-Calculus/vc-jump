@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -1054,5 +1055,211 @@ func TestHTTP_Pagination(t *testing.T) {
 		if resp.PageSize != 100 {
 			t.Errorf("expected page_size capped at 100, got %d", resp.PageSize)
 		}
+	})
+}
+
+// =============================================================================
+// Session Termination tests
+// =============================================================================
+
+func TestHTTP_SessionTermination(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	// Create a session to terminate.
+	ctx := context.Background()
+	session := &storage.Session{
+		Username:   "testuser",
+		SourceIP:   "10.0.0.1",
+		TargetHost: "server1",
+		StartTime:  time.Now(),
+	}
+	_ = h.store.CreateSession(ctx, session)
+
+	t.Run("terminate active session", func(t *testing.T) {
+		rr := h.do(http.MethodDelete, "/api/sessions/active/"+session.ID, nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		var resp map[string]string
+		_ = json.NewDecoder(rr.Body).Decode(&resp)
+		if resp["status"] != "terminated" {
+			t.Errorf("expected status terminated, got %s", resp["status"])
+		}
+	})
+
+	t.Run("terminate already ended session returns conflict", func(t *testing.T) {
+		rr := h.do(http.MethodDelete, "/api/sessions/active/"+session.ID, nil)
+		h.assertStatus(rr, http.StatusConflict)
+	})
+
+	t.Run("terminate nonexistent session returns 404", func(t *testing.T) {
+		rr := h.do(http.MethodDelete, "/api/sessions/active/nonexistent", nil)
+		h.assertStatus(rr, http.StatusNotFound)
+	})
+}
+
+// =============================================================================
+// Audit Export tests
+// =============================================================================
+
+func TestHTTP_AuditExport(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	// Create some audit logs.
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_ = h.store.CreateAuditLog(ctx, &storage.AuditLog{
+			EventType: "test_event",
+			Username:  "admin",
+			Action:    fmt.Sprintf("test action %d", i),
+			Result:    "success",
+		})
+	}
+
+	t.Run("export CSV", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/audit/export?format=csv", nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		ct := rr.Header().Get("Content-Type")
+		if ct != "text/csv; charset=utf-8" {
+			t.Errorf("expected CSV content type, got %s", ct)
+		}
+		cd := rr.Header().Get("Content-Disposition")
+		if cd != "attachment; filename=audit_logs.csv" {
+			t.Errorf("expected CSV disposition, got %s", cd)
+		}
+		body := rr.Body.String()
+		if !strings.Contains(body, "test_event") {
+			t.Error("expected CSV to contain test_event")
+		}
+		if !strings.Contains(body, "id,timestamp,event_type") {
+			t.Error("expected CSV header row")
+		}
+	})
+
+	t.Run("export JSONL", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/audit/export?format=jsonl", nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		ct := rr.Header().Get("Content-Type")
+		if ct != "application/x-ndjson; charset=utf-8" {
+			t.Errorf("expected JSONL content type, got %s", ct)
+		}
+	})
+
+	t.Run("export invalid format", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/audit/export?format=xml", nil)
+		h.assertStatus(rr, http.StatusBadRequest)
+	})
+
+	t.Run("export default is CSV", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/audit/export", nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		ct := rr.Header().Get("Content-Type")
+		if ct != "text/csv; charset=utf-8" {
+			t.Errorf("expected CSV content type, got %s", ct)
+		}
+	})
+}
+
+// =============================================================================
+// Host Import tests
+// =============================================================================
+
+func TestHTTP_HostImport(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	t.Run("import hosts", func(t *testing.T) {
+		body := map[string]interface{}{
+			"hosts": []map[string]interface{}{
+				{"name": "import-host-1", "addr": "10.0.0.1", "port": 22},
+				{"name": "import-host-2", "addr": "10.0.0.2"},
+			},
+		}
+		rr := h.do(http.MethodPost, "/api/hosts/import", body)
+		h.assertStatus(rr, http.StatusCreated)
+
+		var resp hostImportResponse
+		_ = json.NewDecoder(rr.Body).Decode(&resp)
+		if resp.Created != 2 {
+			t.Errorf("expected 2 created, got %d", resp.Created)
+		}
+		if resp.Total != 2 {
+			t.Errorf("expected 2 total, got %d", resp.Total)
+		}
+	})
+
+	t.Run("import with dry run", func(t *testing.T) {
+		body := map[string]interface{}{
+			"hosts": []map[string]interface{}{
+				{"name": "dry-run-host", "addr": "10.0.0.3"},
+			},
+			"dry_run": true,
+		}
+		rr := h.do(http.MethodPost, "/api/hosts/import", body)
+		h.assertStatus(rr, http.StatusOK)
+
+		var resp hostImportResponse
+		_ = json.NewDecoder(rr.Body).Decode(&resp)
+		if !resp.DryRun {
+			t.Error("expected dry_run true")
+		}
+		if resp.Created != 1 {
+			t.Errorf("expected 1 created (dry), got %d", resp.Created)
+		}
+
+		// Verify host was NOT actually created.
+		_, err := h.store.GetHostByName(context.Background(), "dry-run-host")
+		if err == nil {
+			t.Error("expected host not to exist after dry run")
+		}
+	})
+
+	t.Run("import duplicate hosts are skipped", func(t *testing.T) {
+		body := map[string]interface{}{
+			"hosts": []map[string]interface{}{
+				{"name": "import-host-1", "addr": "10.0.0.1"}, // already exists
+			},
+		}
+		rr := h.do(http.MethodPost, "/api/hosts/import", body)
+		h.assertStatus(rr, http.StatusOK)
+
+		var resp hostImportResponse
+		_ = json.NewDecoder(rr.Body).Decode(&resp)
+		if resp.Skipped != 1 {
+			t.Errorf("expected 1 skipped, got %d", resp.Skipped)
+		}
+	})
+
+	t.Run("import with validation errors", func(t *testing.T) {
+		body := map[string]interface{}{
+			"hosts": []map[string]interface{}{
+				{"name": "", "addr": "10.0.0.1"},           // missing name
+				{"name": "good", "addr": ""},               // missing addr
+				{"name": "valid-host", "addr": "10.0.0.5"}, // good
+			},
+		}
+		rr := h.do(http.MethodPost, "/api/hosts/import", body)
+		h.assertStatus(rr, http.StatusCreated)
+
+		var resp hostImportResponse
+		_ = json.NewDecoder(rr.Body).Decode(&resp)
+		if resp.Errors != 2 {
+			t.Errorf("expected 2 errors, got %d", resp.Errors)
+		}
+		if resp.Created != 1 {
+			t.Errorf("expected 1 created, got %d", resp.Created)
+		}
+	})
+
+	t.Run("import empty hosts array", func(t *testing.T) {
+		body := map[string]interface{}{
+			"hosts": []map[string]interface{}{},
+		}
+		rr := h.do(http.MethodPost, "/api/hosts/import", body)
+		h.assertStatus(rr, http.StatusBadRequest)
 	})
 }
