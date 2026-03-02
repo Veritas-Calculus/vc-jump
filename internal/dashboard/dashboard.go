@@ -13,6 +13,7 @@ import (
 
 	"github.com/Veritas-Calculus/vc-jump/internal/auth"
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
+	"github.com/Veritas-Calculus/vc-jump/internal/logger"
 	"github.com/Veritas-Calculus/vc-jump/internal/sshkey"
 	"github.com/Veritas-Calculus/vc-jump/internal/storage"
 )
@@ -29,6 +30,7 @@ type Server struct {
 	keyManager   *sshkey.Manager
 	recordingCfg config.RecordingConfig
 	recorder     RecorderInterface
+	logger       *logger.Logger
 	mux          *http.ServeMux
 	server       *http.Server
 }
@@ -79,6 +81,11 @@ func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg co
 		return nil, fmt.Errorf("failed to create authenticator: %w", err)
 	}
 
+	l, err := logger.New(config.LoggingConfig{Level: "info", Format: "text", Output: "stdout"})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create logger: %w", err)
+	}
+
 	s := &Server{
 		cfg:          cfg,
 		store:        store,
@@ -87,6 +94,7 @@ func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg co
 		keyManager:   sshkey.New(store),
 		recordingCfg: recordingCfg,
 		recorder:     recorder,
+		logger:       l,
 		mux:          http.NewServeMux(),
 	}
 
@@ -94,7 +102,7 @@ func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg co
 
 	s.server = &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      s.securityHeaders(s.mux),
+		Handler:      s.requestLogger(s.securityHeaders(s.mux)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -204,6 +212,40 @@ func (s *Server) Stop(ctx context.Context) error {
 // Middleware
 // =============================================================================
 
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(status int) {
+	rw.status = status
+	rw.ResponseWriter.WriteHeader(status)
+}
+
+// requestLogger logs HTTP requests with latency, status, IP, and User ID.
+func (s *Server) requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+
+		next.ServeHTTP(rw, r)
+
+		duration := time.Since(start)
+
+		userID := rw.Header().Get("X-User-ID")
+		if userID == "" {
+			userID = "-"
+		}
+
+		clientIP := r.RemoteAddr
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			clientIP = strings.Split(xff, ",")[0]
+		}
+
+		s.logger.Infof("%s %s %d %s %s [%v]", r.Method, r.URL.Path, rw.status, clientIP, userID, duration)
+	})
+}
+
 // securityHeaders adds security headers to all responses.
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -258,6 +300,10 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			ctx := context.WithValue(r.Context(), contextKeyUserID, userID)
 			ctx = context.WithValue(ctx, contextKeyAuthType, "api_key")
 			ctx = context.WithValue(ctx, contextKeyScopes, scopes)
+
+			// Set header for logger to extract.
+			w.Header().Set("X-User-ID", userID)
+
 			next(w, r.WithContext(ctx))
 			return
 		}
@@ -272,6 +318,10 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Add user ID to context.
 		ctx := context.WithValue(r.Context(), contextKeyUserID, userID)
 		ctx = context.WithValue(ctx, contextKeyAuthType, "session")
+
+		// Set header for logger to extract.
+		w.Header().Set("X-User-ID", userID)
+
 		next(w, r.WithContext(ctx))
 	}
 }
