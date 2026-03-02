@@ -2341,10 +2341,16 @@ func (s *SQLiteStore) CreateFolder(ctx context.Context, folder Folder) error {
 	}
 	folder.UpdatedAt = now
 
+	// Convert empty ParentID to nil for FK constraint (NULL is valid, "" is not).
+	var parentID interface{}
+	if folder.ParentID != "" {
+		parentID = folder.ParentID
+	}
+
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO folders (id, name, parent_id, path, description, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		folder.ID, folder.Name, folder.ParentID, folder.Path, folder.Description,
+		folder.ID, folder.Name, parentID, folder.Path, folder.Description,
 		folder.CreatedAt, folder.UpdatedAt,
 	)
 	if err != nil {
@@ -2442,11 +2448,17 @@ func (s *SQLiteStore) UpdateFolder(ctx context.Context, folder Folder) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Convert empty ParentID to nil for FK constraint.
+	var parentID interface{}
+	if folder.ParentID != "" {
+		parentID = folder.ParentID
+	}
+
 	folder.UpdatedAt = time.Now()
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE folders SET name = ?, parent_id = ?, path = ?, description = ?, updated_at = ?
 		 WHERE id = ?`,
-		folder.Name, folder.ParentID, folder.Path, folder.Description, folder.UpdatedAt, folder.ID,
+		folder.Name, parentID, folder.Path, folder.Description, folder.UpdatedAt, folder.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update folder: %w", err)
