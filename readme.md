@@ -14,9 +14,12 @@
 - **SSH 跳板机** - SSH 代理转发，支持公钥和密码认证，主机选择器交互式选择目标
 - **会话录像** - 完整记录 SSH 操作过程，支持本地和 S3 兼容存储，支持实时观看活跃会话
 - **Web Dashboard** - 管理界面，涵盖主机、用户、SSH 密钥、文件夹、会话和录像管理
-- **RBAC 权限控制** - 基于角色的细粒度访问控制，5 个预置角色、21 项权限，支持按主机分配权限
+- **RBAC 权限控制** - 基于角色的细粒度访问控制，5 个预置角色、22 项权限，支持按主机分配权限
 - **OTP 双因素认证** - 基于 TOTP 的双因素认证，支持 QR 码配置，可全局强制启用
 - **审计日志** - 记录登录、连接、操作事件，支持按用户/事件类型/时间范围查询和统计
+- **API Key 认证** - 面向自动化和 IaC (Terraform) 场景的长期 API Key，支持 scope 限定和轮替
+- **声明式 IAM** - 支持 `PUT` 全量覆盖的角色/权限分配接口，天然适配 Terraform Drift Detection
+- **OpenAPI 规范** - 提供 OpenAPI 3.1 规范文件 (`openapi.yaml`)，覆盖全部 API 端点
 - **轻量部署** - 单二进制文件，SQLite 存储，支持 Docker 部署
 
 ## 快速开始
@@ -67,6 +70,10 @@ dashboard:
   listen_addr: ":8080"
   username: "admin"
   password: "changeme"
+  # enable_https: true
+  # cert_file: "./cert.pem"
+  # key_file: "./key.pem"
+  session_timeout: "24h"
 
 audit:
   enabled: true
@@ -76,6 +83,10 @@ audit:
 session:
   idle_timeout: 30m
   max_duration: 8h
+
+otp:
+  force_enabled: false     # 全局强制启用 OTP
+  issuer: "VC-Jump"        # 认证器 App 中显示的名称
 
 logging:
   level: "info"
@@ -134,25 +145,14 @@ open http://bastion-host:8080
          └─────────┘  └─────────┘  └─────────┘
 ```
 
-## API 设计与 IaC (Terraform) 准备度
+## Terraform / IaC 集成
 
-VC Jump 的 API 设计整体遵循了 RESTful 规范，对核心资源（主机、用户、文件夹、角色等）提供了标准的 CRUD 接口和唯一 ID 标识，这为第三方集成打下了良好的基础。
+VC Jump 的 API 完整支持 Infrastructure as Code 自动化编排：
 
-**如果希望结合 Terraform (Infrastructure as Code) 进行自动化编排，当前的架构具备以下优势：**
-- 核心资源（Hosts, Users, Folders, Roles）全部具备支持 ID 路由的标准 `GET/POST/PUT/DELETE` 接口，完美契合 Terraform 的状态管理模型。
-- 按业务域（IAM, OTP, Audit）清晰划分了命名空间，资源不会冲突。
-
-**但为了达到最佳的 Terraform 集成体验，当前架构还有以下值得改进的空间（待实现）：**
-
-1. **缺少面向机器的 API Key (Service Account) 机制**
-   - **现状**：API 目前依赖 `/api/login` 账号密码登录换取短期的 Session Token（或 Cookie）。
-   - **改进方向**：尽管底层数据库的 `tokens` 表已预留了 `"api"` 类型的 Token 支持，但还需要提供一个 API 来生成永不过期（或长期有效）的静态 API Key / Service Account Token。Terraform Provider 通常依赖这种静态密钥进行无交互的鉴权。
-2. **关系型数据 (IAM 绑定) 的声明式接口**
-   - **现状**：`/api/iam/user-roles/:userID` 和 `/api/iam/host-permissions` 接口更偏向动作驱动（如附加、移除单个角色）。
-   - **改进方向**：Terraform 倾向于声明式管理状态（即“用户 A 应该具有且仅具有角色 B 和 C”）。未来可以增加能够全量覆盖用户角色或主机权限的 `PUT /api/iam/users/:userID/roles` 接口，以便 Terraform 更轻松地处理资源绑定漂移 (Drift Detection)。
-3. **嵌套子资源路由的规范化**
-   - **现状**：部分鉴权和关联路由（如 `/api/iam/user-roles/:userID`）把主体 ID 放在了末尾。
-   - **改进方向**：更标准的 RESTful 做法是将从属关系嵌套在主体下，例如 `GET /api/users/:userID/roles`，这不仅更符合直觉，也更利于自动化工具（如 OpenAPI 生成器）生成标准的客户端 SDK。
+- **API Key 认证** — 通过 `POST /api/api-keys` 创建长期有效的 API Key（`vcj_` 前缀），用于 Terraform Provider 无交互鉴权。API Key 使用 SHA256 哈希存储，明文仅在创建时显示一次。
+- **声明式 IAM** — `PUT /api/users/:id/roles` 和 `PUT /api/users/:id/host-permissions` 支持全量覆盖的声明式状态管理，返回变更 diff（added/removed/updated），天然适配 Terraform 的 Drift Detection。
+- **标准 RESTful 路由** — 所有核心资源（Hosts、Users、Folders、Roles）均提供 ID 路由的 `GET/POST/PUT/DELETE` 接口，完美契合 Terraform 的状态管理模型。
+- **OpenAPI 3.1 规范** — 提供 `openapi.yaml` 覆盖全部 36+ 端点，可用于自动生成 Terraform Provider 或 SDK。
 
 ---
 
@@ -184,23 +184,24 @@ make clean          # 清理构建产物
 
 ```
 .
-├── cmd/vc-jump/        # 程序入口
+├── cmd/vc-jump/           # 程序入口
 ├── internal/
-│   ├── audit/          # 审计日志
-│   ├── auth/           # 认证（密码哈希、Token、会话管理）
-│   ├── config/         # 配置管理
-│   ├── dashboard/      # Web Dashboard 及 REST API
-│   ├── integration/    # 集成测试
-│   ├── logger/         # 日志模块
-│   ├── otp/            # TOTP 双因素认证
-│   ├── proxy/          # SSH 代理转发
-│   ├── rbac/           # RBAC 角色权限控制
-│   ├── recording/      # 会话录像（本地 / S3）
-│   ├── selector/       # 主机选择器
-│   ├── server/         # SSH 服务器
-│   ├── sshkey/         # SSH 密钥生成与管理
-│   └── storage/        # 数据存储（SQLite / 文件）
-├── .github/workflows/  # CI/CD（测试、Lint、安全扫描、CodeQL、DAST、Docker）
+│   ├── audit/             # 审计日志
+│   ├── auth/              # 认证（密码哈希、Token、会话管理）
+│   ├── config/            # 配置管理
+│   ├── dashboard/         # Web Dashboard 及 REST API
+│   ├── integration/       # 集成测试
+│   ├── logger/            # 日志模块
+│   ├── otp/               # TOTP 双因素认证
+│   ├── proxy/             # SSH 代理转发
+│   ├── rbac/              # RBAC 角色权限控制
+│   ├── recording/         # 会话录像（本地 / S3）
+│   ├── selector/          # 主机选择器
+│   ├── server/            # SSH 服务器
+│   ├── sshkey/            # SSH 密钥生成与管理
+│   └── storage/           # 数据存储（SQLite / 文件）
+├── .github/workflows/     # CI/CD（测试、Lint、安全扫描、CodeQL、DAST、Docker）
+├── openapi.yaml           # OpenAPI 3.1 规范
 ├── Dockerfile
 ├── Makefile
 └── config.example.yaml
@@ -208,7 +209,11 @@ make clean          # 清理构建产物
 
 ## API
 
-Dashboard 提供 REST API，使用 Bearer Token 或 Cookie 认证。
+Dashboard 提供 REST API，支持以下认证方式：
+- **Session Token** — 通过 `POST /api/login` 登录获取，使用 `Authorization: Bearer <token>` 或 `session` Cookie 传递
+- **API Key** — 通过 `POST /api/api-keys` 创建，使用 `Authorization: Bearer vcj_<token>` 传递，适合自动化和 IaC 场景
+
+完整的 API 文档详见 [`openapi.yaml`](openapi.yaml)。
 
 ### 认证
 
@@ -241,6 +246,10 @@ Dashboard 提供 REST API，使用 Bearer Token 或 Cookie 认证。
 | `/api/users` | GET | 获取用户列表 |
 | `/api/users` | POST | 创建用户（支持指定角色） |
 | `/api/users/:id` | GET/PUT/DELETE | 查看、更新、删除用户 |
+| `/api/users/:id/roles` | GET | 获取用户的角色列表 |
+| `/api/users/:id/roles` | PUT | 声明式设置用户角色（全量覆盖） |
+| `/api/users/:id/host-permissions` | GET | 获取用户的主机权限 |
+| `/api/users/:id/host-permissions` | PUT | 声明式设置用户主机权限（全量覆盖） |
 
 ### SSH 密钥管理
 
@@ -266,12 +275,24 @@ Dashboard 提供 REST API，使用 Bearer Token 或 Cookie 认证。
 
 | 端点 | 方法 | 描述 |
 |------|------|------|
-| `/api/iam/roles` | GET/POST | 角色列表 / 创建角色 |
-| `/api/iam/roles/:id` | GET/PUT/DELETE | 查看、更新、删除角色 |
-| `/api/iam/user-roles/:userID` | GET/POST/DELETE | 用户角色分配与撤销 |
+| `/api/roles` | GET/POST | 角色列表 / 创建角色 |
+| `/api/roles/:id` | GET/PUT/DELETE | 查看、更新、删除角色 |
+| `/api/iam/roles` | GET/POST | 角色列表（同 `/api/roles`） |
+| `/api/iam/roles/:id` | GET/PUT/DELETE | 角色详情（同 `/api/roles/:id`） |
+| `/api/iam/user-roles/:userID` | GET/POST/DELETE | 用户角色分配（⚠️ 已废弃，使用 `/api/users/:id/roles`） |
 | `/api/iam/host-permissions` | GET/POST | 主机权限查询与授权 |
 | `/api/iam/host-permissions/:id` | DELETE | 撤销主机权限 |
-| `/api/iam/permissions` | GET | 权限清单（21 项权限） |
+| `/api/iam/permissions` | GET | 权限清单（22 项权限） |
+
+### API Key 管理
+
+| 端点 | 方法 | 描述 |
+|------|------|------|
+| `/api/api-keys` | GET | 获取当前用户的 API Key 列表 |
+| `/api/api-keys` | POST | 创建 API Key（明文仅返回一次） |
+| `/api/api-keys/:id` | GET | 获取 API Key 元数据 |
+| `/api/api-keys/:id` | DELETE | 删除 API Key |
+| `/api/api-keys/:id/rotate` | POST | 轮替 API Key（生成新 token） |
 
 ### OTP 双因素认证
 
@@ -300,11 +321,14 @@ Dashboard 提供 REST API，使用 Bearer Token 或 Cookie 认证。
 
 - SSH 连接全程加密
 - Dashboard 支持 HTTPS（配置 `enable_https`、`cert_file`、`key_file`）
-- 基于 Token / Cookie 的会话认证，可配置超时时间
+- 基于 Session Token / Cookie / API Key 的多种认证方式，可配置超时时间
+- API Key 使用 SHA256 哈希存储，明文仅在创建时显示一次
+- API Key 带 `vcj_` 前缀，Gitleaks 自动检测泄漏
 - TOTP 双因素认证，支持全局强制启用
 - RBAC 细粒度权限控制，按主机分配访问权限（支持 sudo 标记和过期时间）
 - 安全响应头：X-Frame-Options、CSP、Cross-Origin 策略
 - 录像文件路径遍历防护
+- 废弃路由添加 RFC 8594 Deprecation / Sunset / Link header
 - CI 集成 govulncheck、gosec、CodeQL、Trivy、Gitleaks、DAST 扫描
 
 ## 贡献

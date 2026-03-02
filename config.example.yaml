@@ -12,6 +12,20 @@ session:
   idle_timeout: 30m
   max_duration: 8h
 
+dashboard:
+  enabled: true
+  listen_addr: ":8080"
+  username: "admin"
+  password: "changeme"         # Change in production!
+  enable_https: false          # Set to true in production.
+  cert_file: "./cert.pem"      # TLS certificate file.
+  key_file: "./key.pem"        # TLS private key file.
+  session_timeout: "24h"       # Dashboard session timeout.
+
+otp:
+  force_enabled: false         # Force all users to use OTP.
+  issuer: "VC-Jump"            # Issuer name shown in authenticator apps.
+
 recording:
   enabled: true
   storage_type: "local"  # "local" or "s3"
@@ -42,7 +56,7 @@ audit:
   retention_days: 90
 
 storage:
-  type: "file"            # "file" or "sqlite"
+  type: "sqlite"          # "file" or "sqlite"
   file_path: "./data"
   db_path: "./data/vc-jump.db"
 
