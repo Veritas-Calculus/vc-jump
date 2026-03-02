@@ -32,6 +32,12 @@ func NewWithStore(store *storage.SQLiteStore) *Selector {
 	}
 }
 
+// UpdateHosts replaces the static hosts list at runtime.
+// This is used for config hot reload (SIGHUP).
+func (s *Selector) UpdateHosts(hosts []config.HostConfig) {
+	s.hosts = hosts
+}
+
 // GetAccessibleHosts returns a list of hosts that the user can access.
 // If allowedHosts is non-empty, only hosts in that list are returned.
 func (s *Selector) GetAccessibleHosts(username string, groups []string, allowedHosts []string) []config.HostConfig {

@@ -202,6 +202,10 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/api-keys", s.requireAuth(s.handleAPIKeys))
 	s.mux.HandleFunc("/api/api-keys/", s.requireAuth(s.handleAPIKey))
 
+	// API documentation (Swagger UI).
+	s.mux.HandleFunc("/api/docs", s.handleSwaggerUI)
+	s.mux.HandleFunc("/api/docs/openapi.yaml", s.handleOpenAPISpec)
+
 	// SEO/crawler control.
 	s.mux.HandleFunc("/robots.txt", s.handleRobotsTxt)
 	s.mux.HandleFunc("/sitemap.xml", s.handleSitemapXml)

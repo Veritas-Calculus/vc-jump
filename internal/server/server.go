@@ -186,6 +186,17 @@ func (s *Server) Start() error {
 	}
 }
 
+// ReloadHosts updates the configured hosts list at runtime.
+// This is safe to call while the server is running.
+func (s *Server) ReloadHosts(hosts []config.HostConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Hosts = hosts
+	if s.selector != nil {
+		s.selector.UpdateHosts(hosts)
+	}
+}
+
 // Stop gracefully shuts down the server.
 func (s *Server) Stop() error {
 	s.cancel()

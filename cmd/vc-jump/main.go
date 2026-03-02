@@ -36,6 +36,11 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Check for CLI subcommands (user, host, apikey, migrate).
+	if handleCLI(flag.Args(), *configPath) {
+		return
+	}
+
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
@@ -65,6 +70,9 @@ func main() {
 
 	// Handle graceful shutdown.
 	setupGracefulShutdown(srv, dashboardServer)
+
+	// Handle config hot reload on SIGHUP.
+	setupConfigReload(*configPath, srv, cfg)
 
 	log.Printf("starting vc-jump server on %s", cfg.Server.ListenAddr)
 	if err := srv.Start(); err != nil {
@@ -248,6 +256,52 @@ func setupGracefulShutdown(srv *server.Server, dashboardServer *dashboard.Server
 		<-sigCh2 // second signal = force
 		log.Println("forced shutdown (second signal received)")
 		os.Exit(1)
+	}()
+}
+
+func setupConfigReload(configPath string, srv *server.Server, currentCfg *config.Config) {
+	sigHup := make(chan os.Signal, 1)
+	signal.Notify(sigHup, syscall.SIGHUP)
+
+	go func() {
+		for range sigHup {
+			log.Println("SIGHUP received, reloading configuration...")
+
+			newCfg, err := config.Load(configPath)
+			if err != nil {
+				log.Printf("  ✗ config reload failed: %v (keeping current config)", err)
+				continue
+			}
+
+			// Validate that non-reloadable fields haven't changed.
+			if newCfg.Server.ListenAddr != currentCfg.Server.ListenAddr {
+				log.Println("  ⚠ server.listen_addr changed — requires restart")
+			}
+			if newCfg.Storage.DBPath != currentCfg.Storage.DBPath {
+				log.Println("  ⚠ storage.db_path changed — requires restart")
+			}
+
+			// Reload hosts into SSH server.
+			srv.ReloadHosts(newCfg.Hosts)
+			log.Printf("  ✓ reloaded %d hosts", len(newCfg.Hosts))
+
+			// Update session config.
+			if newCfg.Session.IdleTimeout != currentCfg.Session.IdleTimeout {
+				log.Printf("  ✓ session idle timeout: %v → %v",
+					currentCfg.Session.IdleTimeout, newCfg.Session.IdleTimeout)
+			}
+			if newCfg.Session.MaxDuration != currentCfg.Session.MaxDuration {
+				log.Printf("  ✓ session max duration: %v → %v",
+					currentCfg.Session.MaxDuration, newCfg.Session.MaxDuration)
+			}
+
+			// Update current config reference (safe fields only).
+			currentCfg.Hosts = newCfg.Hosts
+			currentCfg.Session = newCfg.Session
+			currentCfg.Logging = newCfg.Logging
+
+			log.Println("  ✓ configuration reloaded successfully")
+		}
 	}()
 }
 
