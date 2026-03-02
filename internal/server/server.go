@@ -39,7 +39,6 @@ type Server struct {
 	selector    *selector.Selector
 	logger      *logger.Logger
 	auditor     *audit.Auditor
-	store       *storage.FileStore
 	sqliteStore *storage.SQLiteStore
 	connSem     chan struct{}
 	ctx         context.Context
@@ -84,14 +83,6 @@ func New(cfg *config.Config) (*Server, error) {
 		} else {
 			s.auditor = auditor
 		}
-	}
-
-	// Initialize storage.
-	store, err := storage.NewFileStore(cfg.Storage)
-	if err != nil {
-		s.logger.Warnf("failed to create storage: %v", err)
-	} else {
-		s.store = store
 	}
 
 	// Initialize authenticator.
@@ -221,9 +212,6 @@ func (s *Server) Stop() error {
 	// Close resources.
 	if s.auditor != nil {
 		_ = s.auditor.Close()
-	}
-	if s.store != nil {
-		_ = s.store.Close()
 	}
 	if s.logger != nil {
 		_ = s.logger.Close()

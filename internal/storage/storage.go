@@ -3,12 +3,7 @@ package storage
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
@@ -148,398 +143,162 @@ type Recording struct {
 	UpdatedAt   time.Time            `json:"updated_at"`
 }
 
-// Store defines the interface for data persistence.
-type Store interface {
-	// Host operations.
+// HostStore defines host operations.
+type HostStore interface {
 	GetHost(ctx context.Context, id string) (*Host, error)
 	GetHostByName(ctx context.Context, name string) (*Host, error)
 	ListHosts(ctx context.Context) ([]Host, error)
 	CreateHost(ctx context.Context, host *Host) error
 	UpdateHost(ctx context.Context, host *Host) error
 	DeleteHost(ctx context.Context, id string) error
+	ListHostsByFolder(ctx context.Context, folderID string) ([]Host, error)
+}
 
-	// User operations.
+// UserStore defines user operations.
+type UserStore interface {
 	GetUser(ctx context.Context, id string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	ListUsers(ctx context.Context) ([]User, error)
 	CreateUser(ctx context.Context, user *User) error
 	UpdateUser(ctx context.Context, user *User) error
 	DeleteUser(ctx context.Context, id string) error
+	GetUserWithPassword(ctx context.Context, username string) (*UserWithPassword, error)
+	CreateUserWithPassword(ctx context.Context, user *UserWithPassword) error
+	UpdateUserPassword(ctx context.Context, userID, passwordHash string) error
+	UpdateUserLastLogin(ctx context.Context, userID string) error
+}
 
-	// Session operations.
+// SessionStore defines session operations.
+type SessionStore interface {
 	GetSession(ctx context.Context, id string) (*Session, error)
 	ListSessions(ctx context.Context, username string, limit int) ([]Session, error)
 	CreateSession(ctx context.Context, session *Session) error
 	UpdateSession(ctx context.Context, session *Session) error
+	ListActiveSessions(ctx context.Context) ([]Session, error)
+	CleanupStaleSessions(ctx context.Context) (int64, error)
+}
 
-	// Recording operations.
+// RoleStore defines role operations.
+type RoleStore interface {
+	GetRole(ctx context.Context, id string) (*Role, error)
+	GetRoleByName(ctx context.Context, name string) (*Role, error)
+	ListRoles(ctx context.Context) ([]Role, error)
+	CreateRole(ctx context.Context, role *Role) error
+	UpdateRole(ctx context.Context, role *Role) error
+	DeleteRole(ctx context.Context, id string) error
+	InitDefaultRoles(ctx context.Context) error
+}
+
+// IAMStore defines IAM and RBAC operations.
+type IAMStore interface {
+	RoleStore
+	GetUserRoles(ctx context.Context, userID string) ([]Role, error)
+	AssignRole(ctx context.Context, userID, roleID string) error
+	RevokeRole(ctx context.Context, userID, roleID string) error
+	SetUserRoles(ctx context.Context, userID string, roleIDs []string) (*RoleDiff, error)
+
+	GetHostPermissions(ctx context.Context, userID string) ([]HostPermission, error)
+	ListAllHostPermissions(ctx context.Context) ([]HostPermission, error)
+	GetHostPermission(ctx context.Context, userID, hostID string) (*HostPermission, error)
+	GrantHostAccess(ctx context.Context, perm *HostPermission) error
+	RevokeHostAccess(ctx context.Context, userID, hostID string) error
+	RevokeHostAccessByID(ctx context.Context, id string) error
+	ListUsersWithHostAccess(ctx context.Context, hostID string) ([]HostPermission, error)
+	SetUserHostPermissions(ctx context.Context, userID string, perms []HostPermission) (*HostPermissionDiff, error)
+}
+
+// OTPStore defines OTP operations.
+type OTPStore interface {
+	SetUserOTPSecret(ctx context.Context, userID, secret string) error
+	EnableUserOTP(ctx context.Context, userID string) error
+	DisableUserOTP(ctx context.Context, userID string) error
+}
+
+// SettingsStore defines setting operations.
+type SettingsStore interface {
+	GetSetting(ctx context.Context, key string) (string, error)
+	SetSetting(ctx context.Context, key, value string) error
+	GetAllSettings(ctx context.Context) (map[string]string, error)
+}
+
+// ApiKeyStore defines API key operations.
+type ApiKeyStore interface {
+	CreateApiKey(ctx context.Context, key *ApiKey) error
+	GetApiKey(ctx context.Context, id string) (*ApiKey, error)
+	GetApiKeyByTokenHash(ctx context.Context, tokenHash string) (*ApiKey, error)
+	ListApiKeysByUser(ctx context.Context, userID string) ([]ApiKey, error)
+	UpdateApiKeyLastUsed(ctx context.Context, id string) error
+	DeactivateApiKey(ctx context.Context, id string) error
+	DeleteApiKey(ctx context.Context, id string) error
+	DeleteApiKeysByUser(ctx context.Context, userID string) error
+}
+
+// TokenStore defines generic token operations.
+type TokenStore interface {
+	CreateToken(ctx context.Context, token *Token) error
+	GetTokenByHash(ctx context.Context, tokenHash string) (*Token, error)
+	DeleteToken(ctx context.Context, id string) error
+	DeleteExpiredTokens(ctx context.Context) error
+	DeleteUserTokens(ctx context.Context, userID string) error
+}
+
+// FolderStore defines folder operations.
+type FolderStore interface {
+	CreateFolder(ctx context.Context, folder Folder) error
+	GetFolder(ctx context.Context, id string) (*Folder, error)
+	ListFolders(ctx context.Context) ([]Folder, error)
+	ListSubfolders(ctx context.Context, parentID string) ([]Folder, error)
+	UpdateFolder(ctx context.Context, folder Folder) error
+	DeleteFolder(ctx context.Context, id string) error
+}
+
+// SSHKeyStore defines SSH key operations.
+type SSHKeyStore interface {
+	GetSSHKey(ctx context.Context, id string) (*SSHKey, error)
+	GetSSHKeyByFingerprint(ctx context.Context, fingerprint string) (*SSHKey, error)
+	ListSSHKeys(ctx context.Context) ([]SSHKey, error)
+	CreateSSHKey(ctx context.Context, key *SSHKey) error
+	DeleteSSHKey(ctx context.Context, id string) error
+}
+
+// AuditStore defines audit log operations.
+type AuditStore interface {
+	CreateAuditLog(ctx context.Context, log *AuditLog) error
+	ListAuditLogs(ctx context.Context, username, eventType string, startTime, endTime time.Time, limit, offset int) ([]AuditLog, error)
+	CleanupAuditLogs(ctx context.Context, before time.Time) (int64, error)
+}
+
+// RecordingStore defines recording metadata operations.
+type RecordingStore interface {
 	GetRecording(ctx context.Context, id string) (*Recording, error)
 	GetRecordingBySessionID(ctx context.Context, sessionID string) (*Recording, error)
 	ListRecordings(ctx context.Context, username string, limit, offset int) ([]Recording, error)
 	CreateRecording(ctx context.Context, recording *Recording) error
 	UpdateRecording(ctx context.Context, recording *Recording) error
 	DeleteRecording(ctx context.Context, id string) error
+	CleanupRecordings(ctx context.Context, before time.Time) (int64, error)
+}
 
-	// Audit log operations.
-	CreateAuditLog(ctx context.Context, log *AuditLog) error
-	ListAuditLogs(ctx context.Context, username, eventType string, startTime, endTime time.Time, limit, offset int) ([]AuditLog, error)
+// Store defines the interface for data persistence by combining all capabilities.
+type Store interface {
+	HostStore
+	UserStore
+	SessionStore
+	IAMStore
+	OTPStore
+	SettingsStore
+	ApiKeyStore
+	TokenStore
+	FolderStore
+	SSHKeyStore
+	AuditStore
+	RecordingStore
 
 	// Lifecycle.
 	Close() error
 }
 
-// FileStore implements Store using JSON files.
-type FileStore struct {
-	basePath string
-	hosts    map[string]*Host
-	users    map[string]*User
-	sessions map[string]*Session
-	mu       sync.RWMutex
-}
-
-// NewFileStore creates a new FileStore instance.
-func NewFileStore(cfg config.StorageConfig) (*FileStore, error) {
-	if cfg.FilePath == "" {
-		return nil, errors.New("file_path cannot be empty")
-	}
-
-	if err := os.MkdirAll(cfg.FilePath, 0700); err != nil {
-		return nil, fmt.Errorf("failed to create storage directory: %w", err)
-	}
-
-	store := &FileStore{
-		basePath: cfg.FilePath,
-		hosts:    make(map[string]*Host),
-		users:    make(map[string]*User),
-		sessions: make(map[string]*Session),
-	}
-
-	// Load existing data.
-	if err := store.load(); err != nil {
-		return nil, fmt.Errorf("failed to load data: %w", err)
-	}
-
-	return store, nil
-}
-
-func (s *FileStore) load() error {
-	if err := s.loadHosts(); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := s.loadUsers(); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := s.loadSessions(); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-func (s *FileStore) loadHosts() error {
-	data, err := os.ReadFile(filepath.Join(s.basePath, "hosts.json"))
-	if err != nil {
-		return err
-	}
-	var hosts []Host
-	if err := json.Unmarshal(data, &hosts); err != nil {
-		return err
-	}
-	for i := range hosts {
-		s.hosts[hosts[i].ID] = &hosts[i]
-	}
-	return nil
-}
-
-func (s *FileStore) loadUsers() error {
-	data, err := os.ReadFile(filepath.Join(s.basePath, "users.json"))
-	if err != nil {
-		return err
-	}
-	var users []User
-	if err := json.Unmarshal(data, &users); err != nil {
-		return err
-	}
-	for i := range users {
-		s.users[users[i].ID] = &users[i]
-	}
-	return nil
-}
-
-func (s *FileStore) loadSessions() error {
-	data, err := os.ReadFile(filepath.Join(s.basePath, "sessions.json"))
-	if err != nil {
-		return err
-	}
-	var sessions []Session
-	if err := json.Unmarshal(data, &sessions); err != nil {
-		return err
-	}
-	for i := range sessions {
-		s.sessions[sessions[i].ID] = &sessions[i]
-	}
-	return nil
-}
-
-func (s *FileStore) saveHosts() error {
-	hosts := make([]Host, 0, len(s.hosts))
-	for _, h := range s.hosts {
-		hosts = append(hosts, *h)
-	}
-	data, err := json.MarshalIndent(hosts, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(s.basePath, "hosts.json"), data, 0600)
-}
-
-func (s *FileStore) saveUsers() error {
-	users := make([]User, 0, len(s.users))
-	for _, u := range s.users {
-		users = append(users, *u)
-	}
-	data, err := json.MarshalIndent(users, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(s.basePath, "users.json"), data, 0600)
-}
-
-func (s *FileStore) saveSessions() error {
-	sessions := make([]Session, 0, len(s.sessions))
-	for _, sess := range s.sessions {
-		sessions = append(sessions, *sess)
-	}
-	data, err := json.MarshalIndent(sessions, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(s.basePath, "sessions.json"), data, 0600)
-}
-
-// Host operations.
-
-func (s *FileStore) GetHost(ctx context.Context, id string) (*Host, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	host, ok := s.hosts[id]
-	if !ok {
-		return nil, errors.New("host not found")
-	}
-	return host, nil
-}
-
-func (s *FileStore) GetHostByName(ctx context.Context, name string) (*Host, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, host := range s.hosts {
-		if host.Name == name {
-			return host, nil
-		}
-	}
-	return nil, errors.New("host not found")
-}
-
-func (s *FileStore) ListHosts(ctx context.Context) ([]Host, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	hosts := make([]Host, 0, len(s.hosts))
-	for _, h := range s.hosts {
-		hosts = append(hosts, *h)
-	}
-	return hosts, nil
-}
-
-func (s *FileStore) CreateHost(ctx context.Context, host *Host) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if host.ID == "" {
-		host.ID = generateID()
-	}
-	host.CreatedAt = time.Now()
-	host.UpdatedAt = time.Now()
-	s.hosts[host.ID] = host
-	return s.saveHosts()
-}
-
-func (s *FileStore) UpdateHost(ctx context.Context, host *Host) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.hosts[host.ID]; !ok {
-		return errors.New("host not found")
-	}
-	host.UpdatedAt = time.Now()
-	s.hosts[host.ID] = host
-	return s.saveHosts()
-}
-
-func (s *FileStore) DeleteHost(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.hosts[id]; !ok {
-		return errors.New("host not found")
-	}
-	delete(s.hosts, id)
-	return s.saveHosts()
-}
-
-// User operations.
-
-func (s *FileStore) GetUser(ctx context.Context, id string) (*User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	user, ok := s.users[id]
-	if !ok {
-		return nil, errors.New("user not found")
-	}
-	return user, nil
-}
-
-func (s *FileStore) GetUserByUsername(ctx context.Context, username string) (*User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, user := range s.users {
-		if user.Username == username {
-			return user, nil
-		}
-	}
-	return nil, errors.New("user not found")
-}
-
-func (s *FileStore) ListUsers(ctx context.Context) ([]User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	users := make([]User, 0, len(s.users))
-	for _, u := range s.users {
-		users = append(users, *u)
-	}
-	return users, nil
-}
-
-func (s *FileStore) CreateUser(ctx context.Context, user *User) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if user.ID == "" {
-		user.ID = generateID()
-	}
-	user.CreatedAt = time.Now()
-	user.UpdatedAt = time.Now()
-	s.users[user.ID] = user
-	return s.saveUsers()
-}
-
-func (s *FileStore) UpdateUser(ctx context.Context, user *User) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.users[user.ID]; !ok {
-		return errors.New("user not found")
-	}
-	user.UpdatedAt = time.Now()
-	s.users[user.ID] = user
-	return s.saveUsers()
-}
-
-func (s *FileStore) DeleteUser(ctx context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.users[id]; !ok {
-		return errors.New("user not found")
-	}
-	delete(s.users, id)
-	return s.saveUsers()
-}
-
-// Session operations.
-
-func (s *FileStore) GetSession(ctx context.Context, id string) (*Session, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	session, ok := s.sessions[id]
-	if !ok {
-		return nil, errors.New("session not found")
-	}
-	return session, nil
-}
-
-func (s *FileStore) ListSessions(ctx context.Context, username string, limit int) ([]Session, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var sessions []Session
-	for _, sess := range s.sessions {
-		if username == "" || sess.Username == username {
-			sessions = append(sessions, *sess)
-		}
-	}
-	if limit > 0 && limit < len(sessions) {
-		sessions = sessions[:limit]
-	}
-	return sessions, nil
-}
-
-func (s *FileStore) CreateSession(ctx context.Context, session *Session) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if session.ID == "" {
-		session.ID = generateID()
-	}
-	s.sessions[session.ID] = session
-	return s.saveSessions()
-}
-
-func (s *FileStore) UpdateSession(ctx context.Context, session *Session) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.sessions[session.ID]; !ok {
-		return errors.New("session not found")
-	}
-	s.sessions[session.ID] = session
-	return s.saveSessions()
-}
-
-// CreateAuditLog is a no-op for FileStore (audit logs not supported in file storage).
-func (s *FileStore) CreateAuditLog(ctx context.Context, log *AuditLog) error {
-	// File-based storage does not support audit logs.
-	return nil
-}
-
-// ListAuditLogs returns empty for FileStore (audit logs not supported in file storage).
-func (s *FileStore) ListAuditLogs(ctx context.Context, username, eventType string, startTime, endTime time.Time, limit, offset int) ([]AuditLog, error) {
-	// File-based storage does not support audit logs.
-	return []AuditLog{}, nil
-}
-
-// GetRecording is a no-op for FileStore (recordings not supported in file storage).
-func (s *FileStore) GetRecording(ctx context.Context, id string) (*Recording, error) {
-	return nil, errors.New("recordings not supported in file storage")
-}
-
-// GetRecordingBySessionID is a no-op for FileStore (recordings not supported in file storage).
-func (s *FileStore) GetRecordingBySessionID(ctx context.Context, sessionID string) (*Recording, error) {
-	return nil, errors.New("recordings not supported in file storage")
-}
-
-// ListRecordings is a no-op for FileStore (recordings not supported in file storage).
-func (s *FileStore) ListRecordings(ctx context.Context, username string, limit, offset int) ([]Recording, error) {
-	return []Recording{}, nil
-}
-
-// CreateRecording is a no-op for FileStore (recordings not supported in file storage).
-func (s *FileStore) CreateRecording(ctx context.Context, recording *Recording) error {
-	return errors.New("recordings not supported in file storage")
-}
-
-// UpdateRecording is a no-op for FileStore (recordings not supported in file storage).
-func (s *FileStore) UpdateRecording(ctx context.Context, recording *Recording) error {
-	return errors.New("recordings not supported in file storage")
-}
-
-// DeleteRecording is a no-op for FileStore (recordings not supported in file storage).
-func (s *FileStore) DeleteRecording(ctx context.Context, id string) error {
-	return errors.New("recordings not supported in file storage")
-}
-
-func (s *FileStore) Close() error {
-	return nil
-}
+// FileStore has been deprecated and removed. Only SQLiteStore is fully supported.
 
 func generateID() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
@@ -548,11 +307,10 @@ func generateID() string {
 // New creates a new Store based on configuration.
 func New(cfg config.StorageConfig) (Store, error) {
 	switch cfg.Type {
-	case "file":
-		return NewFileStore(cfg)
 	case "sqlite":
 		return NewSQLiteStore(cfg)
 	default:
-		return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
+		// Fallback to sqlite if file or unknown is used.
+		return NewSQLiteStore(cfg)
 	}
 }

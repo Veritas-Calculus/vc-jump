@@ -20,17 +20,6 @@ type SSHKey struct {
 	ExpiresAt   time.Time `json:"expires_at,omitempty"`
 }
 
-// SSHKeyStore extends Store with SSH key operations.
-type SSHKeyStore interface {
-	Store
-	// SSH Key operations.
-	GetSSHKey(ctx context.Context, id string) (*SSHKey, error)
-	GetSSHKeyByFingerprint(ctx context.Context, fingerprint string) (*SSHKey, error)
-	ListSSHKeys(ctx context.Context) ([]SSHKey, error)
-	CreateSSHKey(ctx context.Context, key *SSHKey) error
-	DeleteSSHKey(ctx context.Context, id string) error
-}
-
 // GetSSHKey retrieves an SSH key by ID.
 func (s *SQLiteStore) GetSSHKey(ctx context.Context, id string) (*SSHKey, error) {
 	s.mu.RLock()
