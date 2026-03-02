@@ -9,7 +9,10 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/Veritas-Calculus/vc-jump/internal/auth"
 	"github.com/Veritas-Calculus/vc-jump/internal/config"
@@ -33,6 +36,10 @@ type Server struct {
 	logger       *logger.Logger
 	mux          *http.ServeMux
 	server       *http.Server
+
+	ipLimiters    map[string]*rate.Limiter
+	tokenLimiters map[string]*rate.Limiter
+	limitersMu    sync.Mutex
 }
 
 // RecorderInterface defines the interface for session recording.
@@ -87,22 +94,24 @@ func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg co
 	}
 
 	s := &Server{
-		cfg:          cfg,
-		store:        store,
-		auth:         authenticator,
-		session:      auth.NewSessionManager(store, cfg.SessionTimeout),
-		keyManager:   sshkey.New(store),
-		recordingCfg: recordingCfg,
-		recorder:     recorder,
-		logger:       l,
-		mux:          http.NewServeMux(),
+		cfg:           cfg,
+		store:         store,
+		auth:          authenticator,
+		session:       auth.NewSessionManager(store, cfg.SessionTimeout),
+		keyManager:    sshkey.New(store),
+		recordingCfg:  recordingCfg,
+		recorder:      recorder,
+		logger:        l,
+		mux:           http.NewServeMux(),
+		ipLimiters:    make(map[string]*rate.Limiter),
+		tokenLimiters: make(map[string]*rate.Limiter),
 	}
 
 	s.setupRoutes()
 
 	s.server = &http.Server{
 		Addr:         cfg.ListenAddr,
-		Handler:      s.requestLogger(s.securityHeaders(s.mux)),
+		Handler:      s.requestLogger(s.rateLimit(s.securityHeaders(s.mux))),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -237,13 +246,79 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 			userID = "-"
 		}
 
-		clientIP := r.RemoteAddr
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			clientIP = strings.Split(xff, ",")[0]
-		}
+		clientIP := getClientIP(r)
 
 		s.logger.Infof("%s %s %d %s %s [%v]", r.Method, r.URL.Path, rw.status, clientIP, userID, duration)
 	})
+}
+
+// rateLimit implements API rate limiting using token buckets.
+func (s *Server) rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only limit /api/ routes
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		s.limitersMu.Lock()
+		var lim *rate.Limiter
+
+		// 1. Identify context (login vs authenticated API)
+		if r.URL.Path == "/api/login" && r.Method == http.MethodPost {
+			clientIP := getClientIP(r)
+			var exists bool
+			lim, exists = s.ipLimiters[clientIP]
+			if !exists {
+				// 10 requests per minute per IP for login
+				lim = rate.NewLimiter(rate.Limit(10.0/60.0), 10)
+				s.ipLimiters[clientIP] = lim
+			}
+		} else {
+			// Extract token to use as key
+			token := extractToken(r)
+			if token == "" {
+				// IP fallback based on /api/login limit to prevent abuse of unauthorized routes.
+				clientIP := getClientIP(r)
+				var exists bool
+				lim, exists = s.ipLimiters[clientIP]
+				if !exists {
+					lim = rate.NewLimiter(rate.Limit(10.0/60.0), 10)
+					s.ipLimiters[clientIP] = lim
+				}
+			} else {
+				var exists bool
+				lim, exists = s.tokenLimiters[token]
+				if !exists {
+					// 100 requests per minute per Token for APIs
+					lim = rate.NewLimiter(rate.Limit(100.0/60.0), 100)
+					s.tokenLimiters[token] = lim
+				}
+			}
+		}
+		s.limitersMu.Unlock()
+
+		if !lim.Allow() {
+			w.Header().Set("Retry-After", "60")
+			s.jsonError(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// getClientIP extracts real IP from headers or remote addr.
+func getClientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		return strings.Split(xff, ",")[0]
+	}
+	// For RemoteAddr we want just the IP, strip the port.
+	ip := r.RemoteAddr
+	if lastColon := strings.LastIndex(ip, ":"); lastColon != -1 {
+		ip = ip[:lastColon]
+	}
+	return ip
 }
 
 // securityHeaders adds security headers to all responses.
