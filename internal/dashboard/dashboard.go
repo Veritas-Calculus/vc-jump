@@ -122,7 +122,7 @@ func (s *Server) setupRoutes() {
 
 	// User management.
 	s.mux.HandleFunc("/api/users", s.requireAuth(s.handleUsers))
-	s.mux.HandleFunc("/api/users/", s.requireAuth(s.handleUser))
+	s.mux.HandleFunc("/api/users/", s.requireAuth(s.handleUserSubResource)) // Handles /api/users/:id and /api/users/:id/roles, /api/users/:id/host-permissions
 
 	// SSH key management.
 	s.mux.HandleFunc("/api/keys", s.requireAuth(s.handleKeys))
@@ -141,11 +141,14 @@ func (s *Server) setupRoutes() {
 	// IAM - Role management.
 	s.mux.HandleFunc("/api/iam/roles", s.requireAuth(s.handleRoles))
 	s.mux.HandleFunc("/api/iam/roles/", s.requireAuth(s.handleRole))
+	// Normalized alias for roles.
+	s.mux.HandleFunc("/api/roles", s.requireAuth(s.handleRoles))
+	s.mux.HandleFunc("/api/roles/", s.requireAuth(s.handleRole))
 
-	// IAM - User role assignments.
-	s.mux.HandleFunc("/api/iam/user-roles/", s.requireAuth(s.handleUserRoles))
+	// IAM - User role assignments (deprecated, use /api/users/:userID/roles).
+	s.mux.HandleFunc("/api/iam/user-roles/", s.requireAuth(s.deprecated(s.handleUserRoles, "/api/users/{userID}/roles")))
 
-	// IAM - Host permissions.
+	// IAM - Host permissions (deprecated for per-user ops, use /api/users/:userID/host-permissions).
 	s.mux.HandleFunc("/api/iam/host-permissions", s.requireAuth(s.handleHostPermissions))
 	s.mux.HandleFunc("/api/iam/host-permissions/", s.requireAuth(s.handleHostPermission))
 
@@ -167,6 +170,10 @@ func (s *Server) setupRoutes() {
 	// Audit logs.
 	s.mux.HandleFunc("/api/audit", s.requireAuth(s.handleAuditLogs))
 	s.mux.HandleFunc("/api/audit/stats", s.requireAuth(s.handleAuditStats))
+
+	// API Key management.
+	s.mux.HandleFunc("/api/api-keys", s.requireAuth(s.handleAPIKeys))
+	s.mux.HandleFunc("/api/api-keys/", s.requireAuth(s.handleAPIKey))
 
 	// SEO/crawler control.
 	s.mux.HandleFunc("/robots.txt", s.handleRobotsTxt)
@@ -238,6 +245,21 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// API Key authentication path: tokens with "vcj_" prefix.
+		if strings.HasPrefix(token, apiKeyPrefix) {
+			userID, scopes, err := s.validateAPIKey(r, token)
+			if err != nil {
+				s.jsonError(w, "invalid api key", http.StatusUnauthorized)
+				return
+			}
+			ctx := context.WithValue(r.Context(), contextKeyUserID, userID)
+			ctx = context.WithValue(ctx, contextKeyAuthType, "api_key")
+			ctx = context.WithValue(ctx, contextKeyScopes, scopes)
+			next(w, r.WithContext(ctx))
+			return
+		}
+
+		// Session token authentication path (existing behavior).
 		userID, err := s.session.ValidateSession(r.Context(), token)
 		if err != nil {
 			s.jsonError(w, "unauthorized", http.StatusUnauthorized)
@@ -246,13 +268,18 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// Add user ID to context.
 		ctx := context.WithValue(r.Context(), contextKeyUserID, userID)
+		ctx = context.WithValue(ctx, contextKeyAuthType, "session")
 		next(w, r.WithContext(ctx))
 	}
 }
 
 type contextKey string
 
-const contextKeyUserID contextKey = "userID"
+const (
+	contextKeyUserID   contextKey = "userID"
+	contextKeyAuthType contextKey = "authType"
+	contextKeyScopes   contextKey = "scopes"
+)
 
 func extractToken(r *http.Request) string {
 	// Check Authorization header.
@@ -1075,15 +1102,52 @@ func (s *Server) handleRecording(w http.ResponseWriter, r *http.Request) {
 
 // Helper functions.
 
+// deprecated wraps a handler to add deprecation headers to the response.
+// newRoute is the suggested replacement route.
+func (s *Server) deprecated(handler http.HandlerFunc, newRoute string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Deprecation", "true")
+		w.Header().Set("Sunset", "2026-12-31T23:59:59Z")
+		w.Header().Set("Link", "<"+newRoute+">; rel=\"successor-version\"")
+		handler(w, r)
+	}
+}
+
+// APIError represents a standardized error response.
+type APIError struct {
+	Code    int    `json:"code"`              // HTTP status code.
+	Error   string `json:"error"`             // Human-readable error message (backward-compatible).
+	Details string `json:"details,omitempty"` // Optional additional context.
+}
+
 func (s *Server) jsonResponse(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+func (s *Server) jsonCreated(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(data)
 }
 
 func (s *Server) jsonError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+	_ = json.NewEncoder(w).Encode(APIError{
+		Code:  code,
+		Error: message,
+	})
+}
+
+func (s *Server) jsonErrorWithDetails(w http.ResponseWriter, message, details string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(APIError{
+		Code:    code,
+		Error:   message,
+		Details: details,
+	})
 }
 
 // isPathWithinBase validates that the given path is within the base directory.

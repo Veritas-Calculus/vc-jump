@@ -15,3 +15,10 @@
     '''-----BEGIN RSA PRIVATE KEY-----\\n\.\.\.\\n-----END RSA PRIVATE KEY-----''',
     '''-----BEGIN OPENSSH PRIVATE KEY-----\\n\.\.\.\\n-----END OPENSSH PRIVATE KEY-----''',
   ]
+
+# Custom rule: detect VC Jump API keys
+[[rules]]
+  id = "vc-jump-api-key"
+  description = "VC Jump API Key"
+  regex = '''vcj_[A-Fa-f0-9]{48}'''
+  tags = ["key", "vc-jump"]

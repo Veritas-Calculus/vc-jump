@@ -3,6 +3,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -115,9 +116,10 @@ func (s *Server) createRole(w http.ResponseWriter, r *http.Request) {
 	s.jsonResponse(w, role)
 }
 
-// handleRole handles /api/iam/roles/:id.
+// handleRole handles /api/iam/roles/:id and /api/roles/:id.
 func (s *Server) handleRole(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/iam/roles/")
+	id = strings.TrimPrefix(id, "/api/roles/")
 	if id == "" {
 		s.jsonError(w, "role ID required", http.StatusBadRequest)
 		return
@@ -204,6 +206,8 @@ func (s *Server) handleUserRoles(w http.ResponseWriter, r *http.Request) {
 		s.getUserRoles(w, r, userID)
 	case http.MethodPost:
 		s.assignUserRole(w, r, userID)
+	case http.MethodPut:
+		s.setUserRolesDeclarative(w, r, userID)
 	case http.MethodDelete:
 		s.revokeUserRole(w, r, userID)
 	default:
@@ -421,6 +425,241 @@ func (s *Server) revokeHostPermission(w http.ResponseWriter, r *http.Request, pa
 	}
 
 	s.jsonError(w, "invalid path format", http.StatusBadRequest)
+}
+
+// Declarative IAM handlers for Terraform/IaC integration.
+
+// setUserRolesRequest is the request body for declarative role assignment.
+type setUserRolesRequest struct {
+	RoleIDs []string `json:"role_ids"`
+}
+
+// setUserRolesResponse is returned by the declarative role set endpoint.
+type setUserRolesResponse struct {
+	UserID  string   `json:"user_id"`
+	RoleIDs []string `json:"role_ids"`
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+}
+
+// setUserRolesDeclarative handles PUT /api/iam/user-roles/:userID
+// Declaratively sets the complete list of roles for a user.
+func (s *Server) setUserRolesDeclarative(w http.ResponseWriter, r *http.Request, userID string) {
+	if !s.hasPermission(r, "iam:manage") {
+		s.jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Verify user exists.
+	user, err := s.store.GetUser(r.Context(), userID)
+	if err != nil {
+		s.jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+
+	var req setUserRolesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Protect admin user: ensure admin role is always included.
+	if user.Username == "admin" {
+		adminRole, err := s.store.GetRoleByName(r.Context(), "admin")
+		if err == nil {
+			hasAdmin := false
+			for _, id := range req.RoleIDs {
+				if id == adminRole.ID {
+					hasAdmin = true
+					break
+				}
+			}
+			if !hasAdmin {
+				s.jsonError(w, "cannot remove admin role from admin user", http.StatusForbidden)
+				return
+			}
+		}
+	}
+
+	diff, err := s.store.SetUserRoles(r.Context(), userID, req.RoleIDs)
+	if err != nil {
+		s.jsonError(w, fmt.Sprintf("failed to set roles: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Audit log.
+	sourceIP := r.RemoteAddr
+	if fwdIP := r.Header.Get("X-Forwarded-For"); fwdIP != "" {
+		sourceIP = fwdIP
+	}
+	s.logAudit("iam_roles_set", user.Username, sourceIP, "",
+		fmt.Sprintf("declarative role set: added=%v removed=%v", diff.Added, diff.Removed), "success", nil)
+
+	s.jsonResponse(w, setUserRolesResponse{
+		UserID:  userID,
+		RoleIDs: req.RoleIDs,
+		Added:   diff.Added,
+		Removed: diff.Removed,
+	})
+}
+
+// setHostPermissionsRequest is the request body for declarative host permission assignment.
+type setHostPermissionsRequest struct {
+	Permissions []hostPermissionEntry `json:"permissions"`
+}
+
+type hostPermissionEntry struct {
+	HostID    string `json:"host_id"`
+	CanSudo   bool   `json:"can_sudo"`
+	ExpiresAt string `json:"expires_at,omitempty"` // RFC3339 format.
+}
+
+// setHostPermissionsResponse is returned by the declarative permission set endpoint.
+type setHostPermissionsResponse struct {
+	UserID  string   `json:"user_id"`
+	Added   []string `json:"added"`
+	Removed []string `json:"removed"`
+	Updated []string `json:"updated"`
+	Total   int      `json:"total"`
+}
+
+// handleUserHostPermissions handles /api/users/:userID/host-permissions.
+func (s *Server) handleUserHostPermissions(w http.ResponseWriter, r *http.Request, userID string) {
+	switch r.Method {
+	case http.MethodGet:
+		s.getUserHostPermissions(w, r, userID)
+	case http.MethodPut:
+		s.setUserHostPermissionsDeclarative(w, r, userID)
+	default:
+		s.jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// getUserHostPermissions returns all host permissions for a user.
+func (s *Server) getUserHostPermissions(w http.ResponseWriter, r *http.Request, userID string) {
+	if !s.hasPermission(r, "iam:view") {
+		s.jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	perms, err := s.store.GetHostPermissions(r.Context(), userID)
+	if err != nil {
+		s.jsonError(w, "failed to get permissions", http.StatusInternalServerError)
+		return
+	}
+
+	s.jsonResponse(w, perms)
+}
+
+// setUserHostPermissionsDeclarative handles PUT /api/users/:userID/host-permissions.
+// Declaratively sets the complete list of host permissions for a user.
+func (s *Server) setUserHostPermissionsDeclarative(w http.ResponseWriter, r *http.Request, userID string) {
+	if !s.hasPermission(r, "iam:manage") {
+		s.jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Verify user exists.
+	user, err := s.store.GetUser(r.Context(), userID)
+	if err != nil {
+		s.jsonError(w, "user not found", http.StatusNotFound)
+		return
+	}
+
+	var req setHostPermissionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Convert request entries to storage model.
+	var perms []storage.HostPermission
+	for _, entry := range req.Permissions {
+		if entry.HostID == "" {
+			s.jsonError(w, "host_id is required for each permission", http.StatusBadRequest)
+			return
+		}
+
+		perm := storage.HostPermission{
+			UserID:  userID,
+			HostID:  entry.HostID,
+			CanSudo: entry.CanSudo,
+		}
+
+		if entry.ExpiresAt != "" {
+			t, err := time.Parse(time.RFC3339, entry.ExpiresAt)
+			if err != nil {
+				s.jsonError(w, "invalid expires_at format (use RFC3339)", http.StatusBadRequest)
+				return
+			}
+			perm.ExpiresAt = t
+		}
+
+		perms = append(perms, perm)
+	}
+
+	diff, err := s.store.SetUserHostPermissions(r.Context(), userID, perms)
+	if err != nil {
+		s.jsonError(w, fmt.Sprintf("failed to set permissions: %s", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Audit log.
+	sourceIP := r.RemoteAddr
+	if fwdIP := r.Header.Get("X-Forwarded-For"); fwdIP != "" {
+		sourceIP = fwdIP
+	}
+	s.logAudit("iam_permissions_set", user.Username, sourceIP, "",
+		fmt.Sprintf("declarative permission set: added=%v removed=%v updated=%v", diff.Added, diff.Removed, diff.Updated), "success", nil)
+
+	s.jsonResponse(w, setHostPermissionsResponse{
+		UserID:  userID,
+		Added:   diff.Added,
+		Removed: diff.Removed,
+		Updated: diff.Updated,
+		Total:   len(req.Permissions),
+	})
+}
+
+// handleUserSubResource handles routes under /api/users/:userID/...
+// This supports the new normalized nested routes.
+func (s *Server) handleUserSubResource(w http.ResponseWriter, r *http.Request) {
+	// Path format: /api/users/:userID/roles or /api/users/:userID/host-permissions
+	path := strings.TrimPrefix(r.URL.Path, "/api/users/")
+	parts := strings.SplitN(path, "/", 2)
+
+	if len(parts) < 2 {
+		// No sub-resource, delegate to the standard user handler.
+		s.handleUser(w, r)
+		return
+	}
+
+	userID := parts[0]
+	subResource := parts[1]
+
+	if userID == "" {
+		s.jsonError(w, "user ID required", http.StatusBadRequest)
+		return
+	}
+
+	switch subResource {
+	case "roles":
+		// GET/PUT /api/users/:userID/roles
+		switch r.Method {
+		case http.MethodGet:
+			s.getUserRoles(w, r, userID)
+		case http.MethodPut:
+			s.setUserRolesDeclarative(w, r, userID)
+		default:
+			s.jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	case "host-permissions":
+		// GET/PUT /api/users/:userID/host-permissions
+		s.handleUserHostPermissions(w, r, userID)
+	default:
+		// Fall through to standard user handler.
+		s.handleUser(w, r)
+	}
 }
 
 // hasPermission checks if the current user has a specific permission.

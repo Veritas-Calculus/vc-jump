@@ -134,6 +134,28 @@ open http://bastion-host:8080
          └─────────┘  └─────────┘  └─────────┘
 ```
 
+## API 设计与 IaC (Terraform) 准备度
+
+VC Jump 的 API 设计整体遵循了 RESTful 规范，对核心资源（主机、用户、文件夹、角色等）提供了标准的 CRUD 接口和唯一 ID 标识，这为第三方集成打下了良好的基础。
+
+**如果希望结合 Terraform (Infrastructure as Code) 进行自动化编排，当前的架构具备以下优势：**
+- 核心资源（Hosts, Users, Folders, Roles）全部具备支持 ID 路由的标准 `GET/POST/PUT/DELETE` 接口，完美契合 Terraform 的状态管理模型。
+- 按业务域（IAM, OTP, Audit）清晰划分了命名空间，资源不会冲突。
+
+**但为了达到最佳的 Terraform 集成体验，当前架构还有以下值得改进的空间（待实现）：**
+
+1. **缺少面向机器的 API Key (Service Account) 机制**
+   - **现状**：API 目前依赖 `/api/login` 账号密码登录换取短期的 Session Token（或 Cookie）。
+   - **改进方向**：尽管底层数据库的 `tokens` 表已预留了 `"api"` 类型的 Token 支持，但还需要提供一个 API 来生成永不过期（或长期有效）的静态 API Key / Service Account Token。Terraform Provider 通常依赖这种静态密钥进行无交互的鉴权。
+2. **关系型数据 (IAM 绑定) 的声明式接口**
+   - **现状**：`/api/iam/user-roles/:userID` 和 `/api/iam/host-permissions` 接口更偏向动作驱动（如附加、移除单个角色）。
+   - **改进方向**：Terraform 倾向于声明式管理状态（即“用户 A 应该具有且仅具有角色 B 和 C”）。未来可以增加能够全量覆盖用户角色或主机权限的 `PUT /api/iam/users/:userID/roles` 接口，以便 Terraform 更轻松地处理资源绑定漂移 (Drift Detection)。
+3. **嵌套子资源路由的规范化**
+   - **现状**：部分鉴权和关联路由（如 `/api/iam/user-roles/:userID`）把主体 ID 放在了末尾。
+   - **改进方向**：更标准的 RESTful 做法是将从属关系嵌套在主体下，例如 `GET /api/users/:userID/roles`，这不仅更符合直觉，也更利于自动化工具（如 OpenAPI 生成器）生成标准的客户端 SDK。
+
+---
+
 ## 开发
 
 ### 环境要求

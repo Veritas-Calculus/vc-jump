@@ -260,6 +260,25 @@ func (s *SQLiteStore) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_recordings_username ON recordings(username);
 	CREATE INDEX IF NOT EXISTS idx_recordings_start_time ON recordings(start_time);
 	CREATE INDEX IF NOT EXISTS idx_recordings_storage_type ON recordings(storage_type);
+
+	CREATE TABLE IF NOT EXISTS api_keys (
+		id TEXT PRIMARY KEY,
+		user_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		description TEXT,
+		token_prefix TEXT NOT NULL,
+		token_hash TEXT UNIQUE NOT NULL,
+		scopes TEXT DEFAULT '[]',
+		last_used_at DATETIME,
+		expires_at DATETIME,
+		is_active INTEGER DEFAULT 1,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
+	CREATE INDEX IF NOT EXISTS idx_api_keys_token_prefix ON api_keys(token_prefix);
+	CREATE INDEX IF NOT EXISTS idx_api_keys_token_hash ON api_keys(token_hash);
 	`
 
 	_, err := s.db.Exec(schema)
@@ -1319,6 +1338,21 @@ type Token struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// ApiKey represents an API key for programmatic access (e.g., Terraform, CI/CD).
+type ApiKey struct {
+	ID          string     `json:"id"`
+	UserID      string     `json:"user_id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
+	TokenPrefix string     `json:"token_prefix"` // First 8 chars of the token for identification.
+	TokenHash   string     `json:"-"`            // SHA256 hash, never exposed via API.
+	Scopes      []string   `json:"scopes"`       // Permission scopes, empty means inherit all user permissions.
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"` // nil means never expires.
+	IsActive    bool       `json:"is_active"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
 // CreateToken creates a new token.
 func (s *SQLiteStore) CreateToken(ctx context.Context, token *Token) error {
 	s.mu.Lock()
@@ -1699,6 +1733,234 @@ func (s *SQLiteStore) RevokeRole(ctx context.Context, userID, roleID string) err
 	}
 
 	return nil
+}
+
+// RoleDiff describes the changes made by a declarative role set operation.
+type RoleDiff struct {
+	Added   []string // Role IDs that were newly assigned.
+	Removed []string // Role IDs that were removed.
+}
+
+// SetUserRoles declaratively sets the complete list of roles for a user,
+// replacing any existing role assignments. This is transactional — either
+// all changes apply or none do. Returns the diff of what changed.
+func (s *SQLiteStore) SetUserRoles(ctx context.Context, userID string, roleIDs []string) (*RoleDiff, error) {
+	if userID == "" {
+		return nil, errors.New("userID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get current roles (within the lock, no separate mu needed).
+	currentRoles, err := s.getUserRoleIDsLocked(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current roles: %w", err)
+	}
+
+	// Compute diff.
+	currentSet := toStringSet(currentRoles)
+	desiredSet := toStringSet(roleIDs)
+	diff := &RoleDiff{}
+	for id := range desiredSet {
+		if !currentSet[id] {
+			diff.Added = append(diff.Added, id)
+		}
+	}
+	for id := range currentSet {
+		if !desiredSet[id] {
+			diff.Removed = append(diff.Removed, id)
+		}
+	}
+
+	// If nothing changed, return early.
+	if len(diff.Added) == 0 && len(diff.Removed) == 0 {
+		return diff, nil
+	}
+
+	// Execute in a transaction.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Delete all existing role assignments.
+	_, err = tx.ExecContext(ctx, "DELETE FROM user_roles WHERE user_id = ?", userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clear user roles: %w", err)
+	}
+
+	// Insert the desired roles.
+	now := time.Now()
+	for _, roleID := range roleIDs {
+		id := uuid.New().String()
+		_, err = tx.ExecContext(ctx,
+			"INSERT INTO user_roles (id, user_id, role_id, created_at) VALUES (?, ?, ?, ?)",
+			id, userID, roleID, now,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to assign role %s: %w", roleID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit role changes: %w", err)
+	}
+
+	return diff, nil
+}
+
+// getUserRoleIDsLocked returns role IDs for a user. Must be called with s.mu held.
+func (s *SQLiteStore) getUserRoleIDsLocked(ctx context.Context, userID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT role_id FROM user_roles WHERE user_id = ?", userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// HostPermissionDiff describes the changes made by a declarative permission set operation.
+type HostPermissionDiff struct {
+	Added   []string // Host IDs that were newly granted.
+	Removed []string // Host IDs whose permissions were removed.
+	Updated []string // Host IDs whose permissions were modified (e.g. sudo changed).
+}
+
+// SetUserHostPermissions declaratively sets the complete list of host permissions
+// for a user, replacing any existing permissions. This is transactional.
+func (s *SQLiteStore) SetUserHostPermissions(ctx context.Context, userID string, perms []HostPermission) (*HostPermissionDiff, error) {
+	if userID == "" {
+		return nil, errors.New("userID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Get current permissions (within lock).
+	currentPerms, err := s.getUserHostPermissionsLocked(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current permissions: %w", err)
+	}
+
+	// Build maps for diff computation.
+	currentMap := make(map[string]HostPermission)
+	for _, p := range currentPerms {
+		currentMap[p.HostID] = p
+	}
+	desiredMap := make(map[string]HostPermission)
+	for _, p := range perms {
+		desiredMap[p.HostID] = p
+	}
+
+	diff := &HostPermissionDiff{}
+	for hostID := range desiredMap {
+		if _, exists := currentMap[hostID]; !exists {
+			diff.Added = append(diff.Added, hostID)
+		} else {
+			// Check if properties changed.
+			cur := currentMap[hostID]
+			des := desiredMap[hostID]
+			if cur.CanSudo != des.CanSudo || !cur.ExpiresAt.Equal(des.ExpiresAt) {
+				diff.Updated = append(diff.Updated, hostID)
+			}
+		}
+	}
+	for hostID := range currentMap {
+		if _, exists := desiredMap[hostID]; !exists {
+			diff.Removed = append(diff.Removed, hostID)
+		}
+	}
+
+	// If nothing changed, return early.
+	if len(diff.Added) == 0 && len(diff.Removed) == 0 && len(diff.Updated) == 0 {
+		return diff, nil
+	}
+
+	// Execute in a transaction.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Delete all existing permissions for this user.
+	_, err = tx.ExecContext(ctx, "DELETE FROM host_permissions WHERE user_id = ?", userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clear host permissions: %w", err)
+	}
+
+	// Insert the desired permissions.
+	now := time.Now()
+	for _, perm := range perms {
+		id := uuid.New().String()
+		var expiresAt interface{}
+		if !perm.ExpiresAt.IsZero() {
+			expiresAt = perm.ExpiresAt
+		}
+
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO host_permissions (id, user_id, host_id, can_sudo, expires_at, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			id, userID, perm.HostID, perm.CanSudo, expiresAt, now, now,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to grant permission for host %s: %w", perm.HostID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit permission changes: %w", err)
+	}
+
+	return diff, nil
+}
+
+// getUserHostPermissionsLocked returns permissions for a user. Must be called with s.mu held.
+func (s *SQLiteStore) getUserHostPermissionsLocked(ctx context.Context, userID string) ([]HostPermission, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, host_id, can_sudo, expires_at, created_at, updated_at
+		 FROM host_permissions WHERE user_id = ?`, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var perms []HostPermission
+	for rows.Next() {
+		var p HostPermission
+		var expiresAt sql.NullTime
+		if err := rows.Scan(&p.ID, &p.UserID, &p.HostID, &p.CanSudo, &expiresAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if expiresAt.Valid {
+			p.ExpiresAt = expiresAt.Time
+		}
+		perms = append(perms, p)
+	}
+	return perms, rows.Err()
+}
+
+// toStringSet converts a slice to a set (map) for efficient lookup.
+func toStringSet(items []string) map[string]bool {
+	set := make(map[string]bool, len(items))
+	for _, item := range items {
+		set[item] = true
+	}
+	return set
 }
 
 // Host Permission operations.
@@ -2704,4 +2966,207 @@ func (s *SQLiteStore) CleanupRecordings(ctx context.Context, before time.Time) (
 		return 0, fmt.Errorf("failed to cleanup recordings: %w", err)
 	}
 	return result.RowsAffected()
+}
+
+// API Key operations.
+
+// CreateApiKey creates a new API key.
+func (s *SQLiteStore) CreateApiKey(ctx context.Context, key *ApiKey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if key.ID == "" {
+		key.ID = uuid.New().String()
+	}
+	key.CreatedAt = time.Now()
+	key.IsActive = true
+
+	scopesJSON, _ := json.Marshal(key.Scopes)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO api_keys (id, user_id, name, description, token_prefix, token_hash, scopes, expires_at, is_active, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		key.ID, key.UserID, key.Name, key.Description, key.TokenPrefix, key.TokenHash,
+		string(scopesJSON), key.ExpiresAt, key.IsActive, key.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create api key: %w", err)
+	}
+
+	return nil
+}
+
+// GetApiKey retrieves an API key by ID.
+func (s *SQLiteStore) GetApiKey(ctx context.Context, id string) (*ApiKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.scanApiKey(s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, name, description, token_prefix, token_hash, scopes,
+		        last_used_at, expires_at, is_active, created_at
+		 FROM api_keys WHERE id = ?`, id,
+	))
+}
+
+// GetApiKeyByTokenHash retrieves an active API key by its token hash.
+func (s *SQLiteStore) GetApiKeyByTokenHash(ctx context.Context, tokenHash string) (*ApiKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.scanApiKey(s.db.QueryRowContext(ctx,
+		`SELECT id, user_id, name, description, token_prefix, token_hash, scopes,
+		        last_used_at, expires_at, is_active, created_at
+		 FROM api_keys WHERE token_hash = ? AND is_active = 1`, tokenHash,
+	))
+}
+
+// ListApiKeysByUser returns all API keys for a user.
+func (s *SQLiteStore) ListApiKeysByUser(ctx context.Context, userID string) ([]ApiKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, user_id, name, description, token_prefix, token_hash, scopes,
+		        last_used_at, expires_at, is_active, created_at
+		 FROM api_keys WHERE user_id = ? ORDER BY created_at DESC`, userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list api keys: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var keys []ApiKey
+	for rows.Next() {
+		key, err := s.scanApiKeyRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, *key)
+	}
+
+	return keys, nil
+}
+
+// UpdateApiKeyLastUsed updates the last_used_at timestamp.
+func (s *SQLiteStore) UpdateApiKeyLastUsed(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+		time.Now(), id,
+	)
+	return err
+}
+
+// DeactivateApiKey disables an API key without deleting it.
+func (s *SQLiteStore) DeactivateApiKey(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE api_keys SET is_active = 0 WHERE id = ?", id,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to deactivate api key: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return errors.New("api key not found")
+	}
+
+	return nil
+}
+
+// DeleteApiKey permanently removes an API key.
+func (s *SQLiteStore) DeleteApiKey(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.ExecContext(ctx, "DELETE FROM api_keys WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("failed to delete api key: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return errors.New("api key not found")
+	}
+
+	return nil
+}
+
+// DeleteApiKeysByUser removes all API keys for a user.
+func (s *SQLiteStore) DeleteApiKeysByUser(ctx context.Context, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.ExecContext(ctx, "DELETE FROM api_keys WHERE user_id = ?", userID)
+	return err
+}
+
+// scanApiKey scans a single api_key row from a QueryRow result.
+func (s *SQLiteStore) scanApiKey(row *sql.Row) (*ApiKey, error) {
+	var key ApiKey
+	var description sql.NullString
+	var scopesJSON string
+	var lastUsedAt, expiresAt sql.NullTime
+
+	err := row.Scan(
+		&key.ID, &key.UserID, &key.Name, &description, &key.TokenPrefix, &key.TokenHash,
+		&scopesJSON, &lastUsedAt, &expiresAt, &key.IsActive, &key.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, errors.New("api key not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan api key: %w", err)
+	}
+
+	if description.Valid {
+		key.Description = description.String
+	}
+	if lastUsedAt.Valid {
+		key.LastUsedAt = &lastUsedAt.Time
+	}
+	if expiresAt.Valid {
+		key.ExpiresAt = &expiresAt.Time
+	}
+	if err := json.Unmarshal([]byte(scopesJSON), &key.Scopes); err != nil {
+		key.Scopes = nil
+	}
+
+	return &key, nil
+}
+
+// scanApiKeyRow scans a single api_key row from a Rows iterator.
+func (s *SQLiteStore) scanApiKeyRow(rows *sql.Rows) (*ApiKey, error) {
+	var key ApiKey
+	var description sql.NullString
+	var scopesJSON string
+	var lastUsedAt, expiresAt sql.NullTime
+
+	err := rows.Scan(
+		&key.ID, &key.UserID, &key.Name, &description, &key.TokenPrefix, &key.TokenHash,
+		&scopesJSON, &lastUsedAt, &expiresAt, &key.IsActive, &key.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan api key: %w", err)
+	}
+
+	if description.Valid {
+		key.Description = description.String
+	}
+	if lastUsedAt.Valid {
+		key.LastUsedAt = &lastUsedAt.Time
+	}
+	if expiresAt.Valid {
+		key.ExpiresAt = &expiresAt.Time
+	}
+	if err := json.Unmarshal([]byte(scopesJSON), &key.Scopes); err != nil {
+		key.Scopes = nil
+	}
+
+	return &key, nil
 }

@@ -1,0 +1,1351 @@
+openapi: "3.1.0"
+info:
+  title: VC Jump API
+  description: |
+    REST API for VC Jump — a lightweight SSH bastion host (jump server).
+    Provides management of hosts, users, sessions, recordings, IAM (roles & permissions),
+    API keys, and audit logging.
+
+    ## Authentication
+
+    The API supports two authentication methods:
+
+    1. **Session Token** — Obtained via `POST /api/login`, passed as `Authorization: Bearer <token>` or as a `session_token` cookie.
+    2. **API Key** — Created via `POST /api/api-keys`, passed as `Authorization: Bearer vcj_<token>`. API keys are prefixed with `vcj_` for identification.
+
+    ## Deprecation Policy
+
+    Routes marked as deprecated include `Deprecation`, `Sunset`, and `Link` headers in the response.
+    Migrate to the suggested replacement routes before the sunset date.
+  version: 1.0.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Authentication
+    description: Login, logout, and session management
+  - name: Hosts
+    description: SSH host management
+  - name: Users
+    description: User management
+  - name: Folders
+    description: Folder/group management for hosts
+  - name: SSH Keys
+    description: SSH key management
+  - name: Sessions
+    description: SSH session management and monitoring
+  - name: Recordings
+    description: Session recording management
+  - name: IAM
+    description: Identity and Access Management (roles, permissions)
+  - name: API Keys
+    description: API key lifecycle management
+  - name: Audit
+    description: Audit log access
+  - name: OTP
+    description: One-Time Password (TOTP) management
+  - name: Settings
+    description: System settings
+  - name: Stats
+    description: Dashboard statistics
+
+paths:
+  # ─── Authentication ───
+  /api/login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate user
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/logout:
+    post:
+      tags: [Authentication]
+      summary: Logout current session
+      operationId: logout
+      responses:
+        "200":
+          description: Logged out successfully
+
+  /api/me:
+    get:
+      tags: [Authentication]
+      summary: Get current user info
+      operationId: getCurrentUser
+      responses:
+        "200":
+          description: Current user information with roles and permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentUserInfo"
+
+  # ─── Folders ───
+  /api/folders:
+    get:
+      tags: [Folders]
+      summary: List all folders
+      operationId: listFolders
+      responses:
+        "200":
+          description: List of folders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Folder"
+    post:
+      tags: [Folders]
+      summary: Create a folder
+      operationId: createFolder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Folder"
+      responses:
+        "200":
+          description: Created folder
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+
+  /api/folders/{id}:
+    get:
+      tags: [Folders]
+      summary: Get folder by ID
+      operationId: getFolder
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Folder details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Folder"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Folders]
+      summary: Update a folder
+      operationId: updateFolder
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Folder"
+      responses:
+        "200":
+          description: Updated folder
+    delete:
+      tags: [Folders]
+      summary: Delete a folder
+      operationId: deleteFolder
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Folder deleted
+
+  # ─── Hosts ───
+  /api/hosts:
+    get:
+      tags: [Hosts]
+      summary: List all hosts
+      operationId: listHosts
+      responses:
+        "200":
+          description: List of hosts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Host"
+    post:
+      tags: [Hosts]
+      summary: Create a host
+      operationId: createHost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Host"
+      responses:
+        "200":
+          description: Created host
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Host"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /api/hosts/{id}:
+    get:
+      tags: [Hosts]
+      summary: Get host by ID
+      operationId: getHost
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Host details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Host"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Hosts]
+      summary: Update a host
+      operationId: updateHost
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Host"
+      responses:
+        "200":
+          description: Updated host
+    delete:
+      tags: [Hosts]
+      summary: Delete a host
+      operationId: deleteHost
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Host deleted
+
+  # ─── Users ───
+  /api/users:
+    get:
+      tags: [Users]
+      summary: List all users
+      operationId: listUsers
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      tags: [Users]
+      summary: Create a user
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                  format: password
+                groups:
+                  type: array
+                  items:
+                    type: string
+                allowed_hosts:
+                  type: array
+                  items:
+                    type: string
+                role_id:
+                  type: string
+                  description: Role ID to assign. Defaults to "user" role if omitted.
+      responses:
+        "200":
+          description: Created user
+
+  /api/users/{id}:
+    get:
+      tags: [Users]
+      summary: Get user by ID
+      operationId: getUser
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: User details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Users]
+      summary: Update a user
+      operationId: updateUser
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+      responses:
+        "200":
+          description: Updated user
+    delete:
+      tags: [Users]
+      summary: Delete a user
+      operationId: deleteUser
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: User deleted
+
+  /api/users/{userID}/roles:
+    get:
+      tags: [Users, IAM]
+      summary: Get user's assigned roles
+      operationId: getUserRoles
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      responses:
+        "200":
+          description: List of roles assigned to the user
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Role"
+    put:
+      tags: [Users, IAM]
+      summary: Declaratively set user roles (full replacement)
+      description: |
+        Replaces all role assignments for a user. This is designed for
+        Infrastructure as Code tools like Terraform that need declarative
+        state management with drift detection.
+      operationId: setUserRoles
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role_ids]
+              properties:
+                role_ids:
+                  type: array
+                  items:
+                    type: string
+                  description: Complete list of role IDs to assign
+      responses:
+        "200":
+          description: Roles updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoleDiffResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/users/{userID}/host-permissions:
+    get:
+      tags: [Users, IAM]
+      summary: Get user's host permissions
+      operationId: getUserHostPermissions
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      responses:
+        "200":
+          description: List of host permissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/HostPermission"
+    put:
+      tags: [Users, IAM]
+      summary: Declaratively set user host permissions (full replacement)
+      description: |
+        Replaces all host permissions for a user. Designed for IaC tools.
+      operationId: setUserHostPermissions
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    type: object
+                    required: [host_id]
+                    properties:
+                      host_id:
+                        type: string
+                      can_sudo:
+                        type: boolean
+                        default: false
+                      expires_at:
+                        type: string
+                        format: date-time
+                        description: Expiry time in RFC3339 format
+      responses:
+        "200":
+          description: Permissions updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HostPermissionDiffResponse"
+
+  # ─── SSH Keys ───
+  /api/keys:
+    get:
+      tags: [SSH Keys]
+      summary: List SSH keys
+      operationId: listKeys
+      responses:
+        "200":
+          description: List of SSH keys
+
+  /api/keys/{id}:
+    get:
+      tags: [SSH Keys]
+      summary: Get SSH key by ID
+      operationId: getKey
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: SSH key details
+    delete:
+      tags: [SSH Keys]
+      summary: Delete an SSH key
+      operationId: deleteKey
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Key deleted
+
+  # ─── Sessions ───
+  /api/sessions:
+    get:
+      tags: [Sessions]
+      summary: List session history
+      operationId: listSessions
+      responses:
+        "200":
+          description: List of sessions
+
+  /api/sessions/active:
+    get:
+      tags: [Sessions]
+      summary: List active sessions
+      operationId: listActiveSessions
+      responses:
+        "200":
+          description: Active sessions
+
+  /api/sessions/live:
+    get:
+      tags: [Sessions]
+      summary: List live watchable sessions
+      operationId: listLiveSessions
+      responses:
+        "200":
+          description: Live sessions
+
+  /api/sessions/watch/{sessionID}:
+    get:
+      tags: [Sessions]
+      summary: Watch a live session via WebSocket
+      operationId: watchSession
+      parameters:
+        - name: sessionID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "101":
+          description: WebSocket upgrade
+
+  # ─── Recordings ───
+  /api/recordings:
+    get:
+      tags: [Recordings]
+      summary: List recordings
+      operationId: listRecordings
+      responses:
+        "200":
+          description: List of recordings
+
+  /api/recordings/{id}:
+    get:
+      tags: [Recordings]
+      summary: Get recording by ID
+      operationId: getRecording
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Recording details
+    delete:
+      tags: [Recordings]
+      summary: Delete a recording
+      operationId: deleteRecording
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Recording deleted
+
+  # ─── IAM Roles ───
+  /api/roles:
+    get:
+      tags: [IAM]
+      summary: List all roles
+      operationId: listRoles
+      responses:
+        "200":
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Role"
+    post:
+      tags: [IAM]
+      summary: Create a role
+      operationId: createRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Role"
+      responses:
+        "200":
+          description: Created role
+
+  /api/roles/{id}:
+    get:
+      tags: [IAM]
+      summary: Get role by ID
+      operationId: getRole
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Role details
+    put:
+      tags: [IAM]
+      summary: Update a role
+      operationId: updateRole
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Role"
+      responses:
+        "200":
+          description: Updated role
+    delete:
+      tags: [IAM]
+      summary: Delete a role
+      operationId: deleteRole
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Role deleted
+
+  /api/iam/permissions:
+    get:
+      tags: [IAM]
+      summary: List all available permissions
+      operationId: listPermissions
+      responses:
+        "200":
+          description: Available permissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PermissionInfo"
+
+  /api/iam/host-permissions:
+    get:
+      tags: [IAM]
+      summary: List host permissions (filterable)
+      operationId: listHostPermissions
+      parameters:
+        - name: user_id
+          in: query
+          schema:
+            type: string
+          description: Filter by user ID
+        - name: host_id
+          in: query
+          schema:
+            type: string
+          description: Filter by host ID
+      responses:
+        "200":
+          description: List of host permissions
+    post:
+      tags: [IAM]
+      summary: Grant host access
+      operationId: grantHostAccess
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, host_id]
+              properties:
+                user_id:
+                  type: string
+                host_id:
+                  type: string
+                can_sudo:
+                  type: boolean
+                expires_at:
+                  type: string
+                  format: date-time
+      responses:
+        "200":
+          description: Permission granted
+
+  /api/iam/host-permissions/{id}:
+    delete:
+      tags: [IAM]
+      summary: Revoke host access by permission ID
+      operationId: revokeHostAccess
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: Permission revoked
+
+  # ─── API Keys ───
+  /api/api-keys:
+    get:
+      tags: [API Keys]
+      summary: List API keys for current user
+      operationId: listApiKeys
+      responses:
+        "200":
+          description: List of API keys (without plain tokens)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiKeyInfo"
+    post:
+      tags: [API Keys]
+      summary: Create a new API key
+      description: |
+        Creates a new API key. The plain text token is returned **only once**
+        in the response. Store it securely — it cannot be retrieved later.
+      operationId: createApiKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Human-readable name for the key
+                description:
+                  type: string
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: Permission scopes (empty inherits all user permissions)
+                expires_in:
+                  type: string
+                  description: "Duration until expiry, e.g. '90d', '1y', '' for never"
+      responses:
+        "200":
+          description: API key created (includes plain text token)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreated"
+
+  /api/api-keys/{id}:
+    get:
+      tags: [API Keys]
+      summary: Get API key metadata
+      operationId: getApiKey
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: API key metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [API Keys]
+      summary: Delete an API key
+      operationId: deleteApiKey
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: API key deleted
+
+  /api/api-keys/{id}/rotate:
+    post:
+      tags: [API Keys]
+      summary: Rotate an API key
+      description: |
+        Generates a new token for an existing API key, invalidating the old one.
+        The new plain text token is returned **only once**.
+      operationId: rotateApiKey
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: API key rotated (includes new plain text token)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyCreated"
+
+  # ─── OTP ───
+  /api/otp/status:
+    get:
+      tags: [OTP]
+      summary: Get OTP status for current user
+      operationId: getOtpStatus
+      responses:
+        "200":
+          description: OTP status
+
+  /api/otp/setup:
+    post:
+      tags: [OTP]
+      summary: Initialize OTP setup
+      operationId: setupOtp
+      responses:
+        "200":
+          description: OTP setup details (QR code, secret)
+
+  /api/otp/verify:
+    post:
+      tags: [OTP]
+      summary: Verify OTP code to complete setup
+      operationId: verifyOtp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        "200":
+          description: OTP verified and enabled
+
+  /api/otp:
+    delete:
+      tags: [OTP]
+      summary: Disable OTP
+      operationId: disableOtp
+      responses:
+        "200":
+          description: OTP disabled
+
+  # ─── Settings ───
+  /api/settings/otp:
+    get:
+      tags: [Settings]
+      summary: Get OTP enforcement settings
+      operationId: getOtpSettings
+      responses:
+        "200":
+          description: OTP settings
+    put:
+      tags: [Settings]
+      summary: Update OTP enforcement settings
+      operationId: updateOtpSettings
+      responses:
+        "200":
+          description: Settings updated
+
+  # ─── Stats ───
+  /api/stats:
+    get:
+      tags: [Stats]
+      summary: Get dashboard statistics
+      operationId: getStats
+      responses:
+        "200":
+          description: Dashboard statistics
+
+  # ─── Audit ───
+  /api/audit:
+    get:
+      tags: [Audit]
+      summary: List audit logs
+      operationId: listAuditLogs
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: per_page
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: username
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated audit logs
+
+  /api/audit/stats:
+    get:
+      tags: [Audit]
+      summary: Get audit statistics
+      operationId: getAuditStats
+      responses:
+        "200":
+          description: Audit statistics
+
+  # ─── Deprecated Routes ───
+  /api/iam/user-roles/{userID}:
+    get:
+      tags: [IAM]
+      summary: Get user roles (DEPRECATED)
+      deprecated: true
+      description: "Use `GET /api/users/{userID}/roles` instead."
+      operationId: getUserRolesLegacy
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      responses:
+        "200":
+          description: User roles
+    post:
+      tags: [IAM]
+      summary: Assign role to user (DEPRECATED)
+      deprecated: true
+      description: "Use `PUT /api/users/{userID}/roles` for declarative management."
+      operationId: assignUserRoleLegacy
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role_id]
+              properties:
+                role_id:
+                  type: string
+      responses:
+        "200":
+          description: Role assigned
+    put:
+      tags: [IAM]
+      summary: Set user roles declaratively (DEPRECATED)
+      deprecated: true
+      description: "Use `PUT /api/users/{userID}/roles` instead."
+      operationId: setUserRolesLegacy
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role_ids]
+              properties:
+                role_ids:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Roles set
+    delete:
+      tags: [IAM]
+      summary: Revoke role from user (DEPRECATED)
+      deprecated: true
+      description: "Use `PUT /api/users/{userID}/roles` for declarative management."
+      operationId: revokeUserRoleLegacy
+      parameters:
+        - $ref: "#/components/parameters/UserIdParam"
+        - name: role_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Role revoked
+
+  /api/iam/roles:
+    get:
+      tags: [IAM]
+      summary: List roles (alias)
+      operationId: listRolesIam
+      description: "Alias for `GET /api/roles`"
+      responses:
+        "200":
+          description: List of roles
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Session token from /api/login or API key (prefixed with `vcj_`).
+
+  parameters:
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Resource UUID
+    UserIdParam:
+      name: userID
+      in: path
+      required: true
+      schema:
+        type: string
+      description: User UUID
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+
+  schemas:
+    APIError:
+      type: object
+      properties:
+        code:
+          type: integer
+          description: HTTP status code
+        error:
+          type: string
+          description: Human-readable error message
+        details:
+          type: string
+          description: Optional additional context
+
+    Host:
+      type: object
+      properties:
+        id:
+          type: string
+          readOnly: true
+        name:
+          type: string
+        addr:
+          type: string
+          description: Hostname or IP address
+        port:
+          type: integer
+          default: 22
+        user:
+          type: string
+          description: Default SSH username
+        folder_id:
+          type: string
+          description: ID of the folder this host belongs to
+        tags:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          readOnly: true
+        username:
+          type: string
+        source:
+          type: string
+          enum: [local, ldap]
+        is_active:
+          type: boolean
+        groups:
+          type: array
+          items:
+            type: string
+        allowed_hosts:
+          type: array
+          items:
+            type: string
+        roles:
+          type: array
+          items:
+            type: string
+          description: Role names (enriched in list responses)
+          readOnly: true
+        last_login_at:
+          type: string
+          format: date-time
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    Folder:
+      type: object
+      properties:
+        id:
+          type: string
+          readOnly: true
+        name:
+          type: string
+        description:
+          type: string
+        parent_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    Role:
+      type: object
+      properties:
+        id:
+          type: string
+          readOnly: true
+        name:
+          type: string
+        display_name:
+          type: string
+        description:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
+        is_system:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    HostPermission:
+      type: object
+      properties:
+        id:
+          type: string
+          readOnly: true
+        user_id:
+          type: string
+        host_id:
+          type: string
+        can_sudo:
+          type: boolean
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+
+    PermissionInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "Permission identifier (e.g. 'host:connect')"
+        name:
+          type: string
+        category:
+          type: string
+        description:
+          type: string
+
+    ApiKeyInfo:
+      type: object
+      description: API key metadata (no plain text token)
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        token_prefix:
+          type: string
+          description: "First 12 characters of the token (e.g. 'vcj_abcd1234')"
+        scopes:
+          type: array
+          items:
+            type: string
+        last_used_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    ApiKeyCreated:
+      type: object
+      description: API key creation response (includes plain text token, shown once)
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        token:
+          type: string
+          description: "Plain text token (vcj_...). Store securely — shown only once."
+        token_prefix:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    RoleDiffResponse:
+      type: object
+      description: Response from declarative role assignment
+      properties:
+        user_id:
+          type: string
+        role_ids:
+          type: array
+          items:
+            type: string
+        added:
+          type: array
+          items:
+            type: string
+          description: Role IDs that were newly assigned
+        removed:
+          type: array
+          items:
+            type: string
+          description: Role IDs that were removed
+
+    HostPermissionDiffResponse:
+      type: object
+      description: Response from declarative host permission assignment
+      properties:
+        user_id:
+          type: string
+        added:
+          type: array
+          items:
+            type: string
+          description: Host IDs that were newly granted
+        removed:
+          type: array
+          items:
+            type: string
+          description: Host IDs whose permissions were removed
+        updated:
+          type: array
+          items:
+            type: string
+          description: Host IDs whose permissions were modified
+        total:
+          type: integer
+          description: Total number of permissions after the operation
+
+    LoginResponse:
+      type: object
+      description: Successful login response
+      properties:
+        token:
+          type: string
+          description: Session token for subsequent API calls
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+            username:
+              type: string
+            groups:
+              type: array
+              items:
+                type: string
+
+    CurrentUserInfo:
+      type: object
+      description: Current authenticated user details with resolved permissions
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        groups:
+          type: array
+          items:
+            type: string
+        roles:
+          type: array
+          items:
+            type: string
+          description: Role names assigned to the user
+        permissions:
+          type: array
+          items:
+            type: string
+          description: Aggregated permission IDs from all assigned roles
