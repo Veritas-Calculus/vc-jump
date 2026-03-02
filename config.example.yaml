@@ -7,6 +7,12 @@ auth:
   sso_endpoint: ""  # Leave empty for local development.
   cache_duration: 24h
   cache_path: "./cache"
+  # OIDC/SSO configuration (optional).
+  # When configured, enables "Login with SSO" on the dashboard.
+  oidc_issuer: ""        # e.g., https://accounts.google.com or https://keycloak.example.com/realms/myrealm
+  oidc_client_id: ""     # OAuth2 client ID from your IdP
+  oidc_client_secret: "" # OAuth2 client secret from your IdP
+  oidc_redirect_url: ""  # e.g., http://localhost:8080/api/auth/oidc/callback
 
 session:
   idle_timeout: 30m

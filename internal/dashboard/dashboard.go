@@ -27,6 +27,7 @@ var staticFiles embed.FS
 // Server represents the dashboard HTTP server.
 type Server struct {
 	cfg          DashboardConfig
+	authCfg      config.AuthConfig
 	store        *storage.SQLiteStore
 	auth         *auth.Authenticator
 	session      *auth.SessionManager
@@ -95,6 +96,7 @@ func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg co
 
 	s := &Server{
 		cfg:           cfg,
+		authCfg:       authCfg,
 		store:         store,
 		auth:          authenticator,
 		session:       auth.NewSessionManager(store, cfg.SessionTimeout),
@@ -129,6 +131,10 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/api/login", s.handleLogin)
 	s.mux.HandleFunc("/api/logout", s.requireAuth(s.handleLogout))
 	s.mux.HandleFunc("/api/me", s.requireAuth(s.handleMe))
+
+	// OIDC authentication (no auth required — these ARE the auth flow).
+	s.mux.HandleFunc("/api/auth/oidc/login", s.handleOIDCLogin)
+	s.mux.HandleFunc("/api/auth/oidc/callback", s.handleOIDCCallback)
 
 	// Folder management.
 	s.mux.HandleFunc("/api/folders", s.requireAuth(s.handleFolders))

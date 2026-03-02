@@ -1263,3 +1263,27 @@ func TestHTTP_HostImport(t *testing.T) {
 		h.assertStatus(rr, http.StatusBadRequest)
 	})
 }
+
+// =============================================================================
+// OIDC tests
+// =============================================================================
+
+func TestHTTP_OIDC(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	t.Run("OIDC login returns 501 when not configured", func(t *testing.T) {
+		rr := h.doNoAuth(http.MethodGet, "/api/auth/oidc/login", nil)
+		h.assertStatus(rr, http.StatusNotImplemented)
+	})
+
+	t.Run("OIDC callback returns 501 when not configured", func(t *testing.T) {
+		rr := h.doNoAuth(http.MethodGet, "/api/auth/oidc/callback?code=test&state=test", nil)
+		h.assertStatus(rr, http.StatusNotImplemented)
+	})
+
+	t.Run("OIDC login rejects POST", func(t *testing.T) {
+		rr := h.doNoAuth(http.MethodPost, "/api/auth/oidc/login", nil)
+		h.assertStatus(rr, http.StatusMethodNotAllowed)
+	})
+}

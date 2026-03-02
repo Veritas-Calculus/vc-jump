@@ -37,6 +37,12 @@ type AuthConfig struct {
 	SSOEndpoint   string        `yaml:"sso_endpoint"`
 	CacheDuration time.Duration `yaml:"cache_duration"`
 	CachePath     string        `yaml:"cache_path"`
+
+	// OIDC configuration.
+	OIDCIssuer       string `yaml:"oidc_issuer"`        // OIDC provider issuer URL (e.g., https://accounts.google.com)
+	OIDCClientID     string `yaml:"oidc_client_id"`     // OAuth2 client ID
+	OIDCClientSecret string `yaml:"oidc_client_secret"` // OAuth2 client secret
+	OIDCRedirectURL  string `yaml:"oidc_redirect_url"`  // Redirect URL after auth (e.g., http://localhost:8080/api/auth/oidc/callback)
 }
 
 // SessionConfig holds session management configuration.
