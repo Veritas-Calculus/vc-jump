@@ -18,13 +18,28 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := 100
-	sessions, err := s.store.ListSessions(r.Context(), "", limit)
-	if err != nil {
-		s.jsonError(w, "failed to list sessions", http.StatusInternalServerError)
-		return
+	pg := parsePagination(r)
+	if pg != nil {
+		total, err := s.store.CountSessions(r.Context())
+		if err != nil {
+			s.jsonError(w, "failed to count sessions", http.StatusInternalServerError)
+			return
+		}
+		sessions, err := s.store.ListSessions(r.Context(), "", pg.PageSize)
+		if err != nil {
+			s.jsonError(w, "failed to list sessions", http.StatusInternalServerError)
+			return
+		}
+		s.jsonResponse(w, newPaginatedResponse(sessions, total, pg))
+	} else {
+		limit := 100
+		sessions, err := s.store.ListSessions(r.Context(), "", limit)
+		if err != nil {
+			s.jsonError(w, "failed to list sessions", http.StatusInternalServerError)
+			return
+		}
+		s.jsonResponse(w, sessions)
 	}
-	s.jsonResponse(w, sessions)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

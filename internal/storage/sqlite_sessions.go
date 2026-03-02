@@ -87,6 +87,19 @@ func (s *SQLiteStore) ListSessions(ctx context.Context, username string, limit i
 	return sessions, nil
 }
 
+// CountSessions returns the total number of sessions.
+func (s *SQLiteStore) CountSessions(ctx context.Context) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sessions").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count sessions: %w", err)
+	}
+	return count, nil
+}
+
 // CreateSession creates a new session.
 func (s *SQLiteStore) CreateSession(ctx context.Context, session *Session) error {
 	s.mu.Lock()

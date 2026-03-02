@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -955,5 +956,103 @@ func TestHTTP_HealthCheck(t *testing.T) {
 	t.Run("healthz no auth required", func(t *testing.T) {
 		rr := h.doNoAuth(http.MethodGet, "/healthz", nil)
 		h.assertStatus(rr, http.StatusOK)
+	})
+}
+
+// =============================================================================
+// Pagination tests
+// =============================================================================
+
+func TestHTTP_Pagination(t *testing.T) {
+	t.Parallel()
+	h := newTestHarness(t)
+
+	// Create 3 hosts for pagination testing.
+	for i := 0; i < 3; i++ {
+		body := map[string]interface{}{
+			"name": fmt.Sprintf("page-host-%d", i),
+			"addr": fmt.Sprintf("10.0.0.%d", i+1),
+			"port": 22,
+		}
+		rr := h.do(http.MethodPost, "/api/hosts", body)
+		h.assertStatus(rr, http.StatusOK)
+	}
+
+	t.Run("hosts without pagination returns raw array", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/hosts", nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		// Should be a JSON array.
+		var hosts []map[string]interface{}
+		if err := json.NewDecoder(rr.Body).Decode(&hosts); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if len(hosts) < 3 {
+			t.Errorf("expected at least 3 hosts, got %d", len(hosts))
+		}
+	})
+
+	t.Run("hosts with pagination returns paginated envelope", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/hosts?page=1&page_size=2", nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		var resp PaginatedResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if resp.Total < 3 {
+			t.Errorf("expected total >= 3, got %d", resp.Total)
+		}
+		if resp.Page != 1 {
+			t.Errorf("expected page 1, got %d", resp.Page)
+		}
+		if resp.PageSize != 2 {
+			t.Errorf("expected page_size 2, got %d", resp.PageSize)
+		}
+		if resp.Pages < 2 {
+			t.Errorf("expected pages >= 2, got %d", resp.Pages)
+		}
+	})
+
+	t.Run("hosts page 2", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/hosts?page=2&page_size=2", nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		var resp PaginatedResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if resp.Page != 2 {
+			t.Errorf("expected page 2, got %d", resp.Page)
+		}
+	})
+
+	t.Run("users with pagination", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/users?page=1&page_size=10", nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		var resp PaginatedResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if resp.Page != 1 {
+			t.Errorf("expected page 1, got %d", resp.Page)
+		}
+		if resp.Total < 1 {
+			t.Errorf("expected at least 1 user, got %d", resp.Total)
+		}
+	})
+
+	t.Run("page_size capped at max", func(t *testing.T) {
+		rr := h.do(http.MethodGet, "/api/hosts?page=1&page_size=500", nil)
+		h.assertStatus(rr, http.StatusOK)
+
+		var resp PaginatedResponse
+		if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if resp.PageSize != 100 {
+			t.Errorf("expected page_size capped at 100, got %d", resp.PageSize)
+		}
 	})
 }

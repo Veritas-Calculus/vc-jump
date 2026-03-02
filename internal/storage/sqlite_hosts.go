@@ -151,6 +151,70 @@ func (s *SQLiteStore) ListHosts(ctx context.Context) ([]Host, error) {
 	return hosts, nil
 }
 
+// CountHosts returns the total number of hosts.
+func (s *SQLiteStore) CountHosts(ctx context.Context) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM hosts").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count hosts: %w", err)
+	}
+	return count, nil
+}
+
+// ListHostsPaginated returns hosts with limit and offset.
+func (s *SQLiteStore) ListHostsPaginated(ctx context.Context, limit, offset int) ([]Host, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, name, addr, port, user, users, groups, folder_id, key_id, insecure_ignore_host_key, created_at, updated_at FROM hosts ORDER BY name LIMIT ? OFFSET ?",
+		limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list hosts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var hosts []Host
+	for rows.Next() {
+		var host Host
+		var usersJSON, groupsJSON string
+		var keyID, user, folderID sql.NullString
+		var insecureIgnoreHostKey sql.NullBool
+		if err := rows.Scan(&host.ID, &host.Name, &host.Addr, &host.Port, &user, &usersJSON, &groupsJSON, &folderID, &keyID, &insecureIgnoreHostKey, &host.CreatedAt, &host.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan host: %w", err)
+		}
+
+		if keyID.Valid {
+			host.KeyID = keyID.String
+		}
+		if folderID.Valid {
+			host.FolderID = folderID.String
+		}
+		if user.Valid {
+			host.User = user.String
+		} else {
+			host.User = "root"
+		}
+		if insecureIgnoreHostKey.Valid {
+			host.InsecureIgnoreHostKey = insecureIgnoreHostKey.Bool
+		}
+		if err := json.Unmarshal([]byte(usersJSON), &host.Users); err != nil {
+			host.Users = nil
+		}
+		if err := json.Unmarshal([]byte(groupsJSON), &host.Groups); err != nil {
+			host.Groups = nil
+		}
+
+		hosts = append(hosts, host)
+	}
+
+	return hosts, nil
+}
+
 // CreateHost creates a new host.
 func (s *SQLiteStore) CreateHost(ctx context.Context, host *Host) error {
 	s.mu.Lock()

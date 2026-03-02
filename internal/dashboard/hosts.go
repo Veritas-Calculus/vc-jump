@@ -12,12 +12,27 @@ import (
 func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		hosts, err := s.store.ListHosts(r.Context())
-		if err != nil {
-			s.jsonError(w, "failed to list hosts", http.StatusInternalServerError)
-			return
+		pg := parsePagination(r)
+		if pg != nil {
+			total, err := s.store.CountHosts(r.Context())
+			if err != nil {
+				s.jsonError(w, "failed to count hosts", http.StatusInternalServerError)
+				return
+			}
+			hosts, err := s.store.ListHostsPaginated(r.Context(), pg.PageSize, pg.Offset)
+			if err != nil {
+				s.jsonError(w, "failed to list hosts", http.StatusInternalServerError)
+				return
+			}
+			s.jsonResponse(w, newPaginatedResponse(hosts, total, pg))
+		} else {
+			hosts, err := s.store.ListHosts(r.Context())
+			if err != nil {
+				s.jsonError(w, "failed to list hosts", http.StatusInternalServerError)
+				return
+			}
+			s.jsonResponse(w, hosts)
 		}
-		s.jsonResponse(w, hosts)
 
 	case http.MethodPost:
 		var host storage.Host

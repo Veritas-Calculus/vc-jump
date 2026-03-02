@@ -17,15 +17,9 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			s.jsonError(w, "permission denied", http.StatusForbidden)
 			return
 		}
-		users, err := s.store.ListUsers(r.Context())
-		if err != nil {
-			s.jsonError(w, "failed to list users", http.StatusInternalServerError)
-			return
-		}
-		// Return users without password hashes.
-		var safeUsers []map[string]interface{}
-		for _, u := range users {
-			safeUsers = append(safeUsers, map[string]interface{}{
+
+		toSafeUser := func(u storage.User) map[string]interface{} {
+			return map[string]interface{}{
 				"id":            u.ID,
 				"username":      u.Username,
 				"groups":        u.Groups,
@@ -33,9 +27,38 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 				"source":        u.Source,
 				"otp_enabled":   u.OTPEnabled,
 				"created_at":    u.CreatedAt,
-			})
+			}
 		}
-		s.jsonResponse(w, safeUsers)
+
+		pg := parsePagination(r)
+		if pg != nil {
+			total, err := s.store.CountUsers(r.Context())
+			if err != nil {
+				s.jsonError(w, "failed to count users", http.StatusInternalServerError)
+				return
+			}
+			users, err := s.store.ListUsersPaginated(r.Context(), pg.PageSize, pg.Offset)
+			if err != nil {
+				s.jsonError(w, "failed to list users", http.StatusInternalServerError)
+				return
+			}
+			var safeUsers []map[string]interface{}
+			for _, u := range users {
+				safeUsers = append(safeUsers, toSafeUser(u))
+			}
+			s.jsonResponse(w, newPaginatedResponse(safeUsers, total, pg))
+		} else {
+			users, err := s.store.ListUsers(r.Context())
+			if err != nil {
+				s.jsonError(w, "failed to list users", http.StatusInternalServerError)
+				return
+			}
+			var safeUsers []map[string]interface{}
+			for _, u := range users {
+				safeUsers = append(safeUsers, toSafeUser(u))
+			}
+			s.jsonResponse(w, safeUsers)
+		}
 
 	case http.MethodPost:
 		if !s.hasPermission(r, "user:create") {

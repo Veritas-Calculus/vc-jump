@@ -160,6 +160,73 @@ func (s *SQLiteStore) ListUsers(ctx context.Context) ([]User, error) {
 	return users, nil
 }
 
+// CountUsers returns the total number of users.
+func (s *SQLiteStore) CountUsers(ctx context.Context) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count users: %w", err)
+	}
+	return count, nil
+}
+
+// ListUsersPaginated returns users with limit and offset.
+func (s *SQLiteStore) ListUsersPaginated(ctx context.Context, limit, offset int) ([]User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT id, username, password_hash, groups, public_keys, allowed_hosts, source, totp_secret, otp_enabled, otp_verified, is_active, last_login_at, created_at, updated_at FROM users ORDER BY username LIMIT ? OFFSET ?",
+		limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list users: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		var groupsJSON, publicKeysJSON string
+		var allowedHostsJSON, passwordHash, source, otpSecret sql.NullString
+		var lastLoginAt sql.NullTime
+		if err := rows.Scan(&user.ID, &user.Username, &passwordHash, &groupsJSON, &publicKeysJSON, &allowedHostsJSON, &source, &otpSecret, &user.OTPEnabled, &user.OTPVerified, &user.IsActive, &lastLoginAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+
+		if passwordHash.Valid {
+			user.PasswordHash = passwordHash.String
+		}
+		if source.Valid {
+			user.Source = UserSource(source.String)
+		}
+		if otpSecret.Valid {
+			user.OTPSecret = otpSecret.String
+		}
+		if lastLoginAt.Valid {
+			user.LastLoginAt = lastLoginAt.Time
+		}
+		if err := json.Unmarshal([]byte(groupsJSON), &user.Groups); err != nil {
+			user.Groups = nil
+		}
+		if err := json.Unmarshal([]byte(publicKeysJSON), &user.PublicKeys); err != nil {
+			user.PublicKeys = nil
+		}
+		if allowedHostsJSON.Valid {
+			if err := json.Unmarshal([]byte(allowedHostsJSON.String), &user.AllowedHosts); err != nil {
+				user.AllowedHosts = nil
+			}
+		}
+
+		users = append(users, user)
+	}
+
+	return users, nil
+}
+
 // CreateUser creates a new user.
 func (s *SQLiteStore) CreateUser(ctx context.Context, user *User) error {
 	s.mu.Lock()
