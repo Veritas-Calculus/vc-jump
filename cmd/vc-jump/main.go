@@ -213,20 +213,41 @@ func setupGracefulShutdown(srv *server.Server, dashboardServer *dashboard.Server
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		<-sigCh
-		log.Println("shutting down server...")
+		sig := <-sigCh
+		log.Printf("received %s, initiating graceful shutdown...", sig)
 
+		// Phase 1: Stop accepting new HTTP requests.
 		if dashboardServer != nil {
+			log.Println("  → stopping dashboard HTTP server...")
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			if err := dashboardServer.Stop(ctx); err != nil {
-				log.Printf("error stopping dashboard: %v", err)
+				log.Printf("  ✗ error stopping dashboard: %v", err)
+			} else {
+				log.Println("  ✓ dashboard stopped")
 			}
+			cancel()
 		}
 
+		// Phase 2: Stop SSH server (waits for active sessions up to 30s).
+		log.Println("  → stopping SSH server (waiting for active sessions)...")
 		if err := srv.Stop(); err != nil {
-			log.Printf("error stopping server: %v", err)
+			log.Printf("  ✗ error stopping SSH server: %v", err)
+		} else {
+			log.Println("  ✓ SSH server stopped")
 		}
+
+		log.Println("shutdown complete")
+		os.Exit(0)
+	}()
+
+	// Second signal = force exit.
+	go func() {
+		sigCh2 := make(chan os.Signal, 1)
+		signal.Notify(sigCh2, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh2 // first signal handled above
+		<-sigCh2 // second signal = force
+		log.Println("forced shutdown (second signal received)")
+		os.Exit(1)
 	}()
 }
 

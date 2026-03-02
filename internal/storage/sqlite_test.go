@@ -1259,6 +1259,52 @@ func TestSQLiteStore_RecordingS3Fields(t *testing.T) {
 	}
 }
 
+// ============================================================
+// Migration System Tests
+// ============================================================
+
+func TestSQLiteStore_MigrationVersion(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+
+	version, err := store.GetMigrationVersion()
+	if err != nil {
+		t.Fatalf("failed to get migration version: %v", err)
+	}
+	// All 4 built-in migrations should be applied on a fresh DB.
+	if version != 4 {
+		t.Errorf("expected migration version 4, got %d", version)
+	}
+}
+
+func TestSQLiteStore_MigrationIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	cfg := config.StorageConfig{Type: "sqlite", DBPath: dbPath}
+
+	// Open the store twice — migrations should be idempotent.
+	store1, err := NewSQLiteStore(cfg)
+	if err != nil {
+		t.Fatalf("first open failed: %v", err)
+	}
+	store1.Close()
+
+	store2, err := NewSQLiteStore(cfg)
+	if err != nil {
+		t.Fatalf("second open failed: %v", err)
+	}
+	defer store2.Close()
+
+	version, err := store2.GetMigrationVersion()
+	if err != nil {
+		t.Fatalf("failed to get migration version: %v", err)
+	}
+	if version != 4 {
+		t.Errorf("expected version 4 after re-open, got %d", version)
+	}
+}
+
 // Cleanup test files.
 func TestMain(m *testing.M) {
 	code := m.Run()

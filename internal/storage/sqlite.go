@@ -289,39 +289,56 @@ func (s *SQLiteStore) initSchema() error {
 	return s.runMigrations()
 }
 
-// runMigrations applies any necessary schema migrations.
+// runMigrations applies any necessary schema migrations using a versioned system.
 func (s *SQLiteStore) runMigrations() error {
-	// Add 'user' column to hosts if it doesn't exist.
-	_, err := s.db.Exec("ALTER TABLE hosts ADD COLUMN user TEXT DEFAULT 'root'")
+	// Ensure migration tracking table exists.
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
 	if err != nil {
-		// Ignore error if column already exists.
-		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
-			return err
-		}
+		return fmt.Errorf("failed to create schema_migrations table: %w", err)
 	}
 
-	// Add 'insecure_ignore_host_key' column to hosts if it doesn't exist.
-	_, err = s.db.Exec("ALTER TABLE hosts ADD COLUMN insecure_ignore_host_key INTEGER DEFAULT 0")
-	if err != nil {
-		// Ignore error if column already exists.
-		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
-			return err
-		}
+	// Define migrations in order. Each runs exactly once.
+	migrations := []struct {
+		version int
+		name    string
+		sql     string
+	}{
+		{1, "add_hosts_user_column", "ALTER TABLE hosts ADD COLUMN user TEXT DEFAULT 'root'"},
+		{2, "add_hosts_insecure_flag", "ALTER TABLE hosts ADD COLUMN insecure_ignore_host_key INTEGER DEFAULT 0"},
+		{3, "add_users_otp_enabled", "ALTER TABLE users ADD COLUMN otp_enabled INTEGER DEFAULT 0"},
+		{4, "add_users_otp_verified", "ALTER TABLE users ADD COLUMN otp_verified INTEGER DEFAULT 0"},
 	}
 
-	// Add 'otp_enabled' column to users if it doesn't exist.
-	_, err = s.db.Exec("ALTER TABLE users ADD COLUMN otp_enabled INTEGER DEFAULT 0")
-	if err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
-			return err
+	for _, m := range migrations {
+		applied, err := s.isMigrationApplied(m.version)
+		if err != nil {
+			return fmt.Errorf("migration check failed for v%d (%s): %w", m.version, m.name, err)
 		}
-	}
+		if applied {
+			continue
+		}
 
-	// Add 'otp_verified' column to users if it doesn't exist.
-	_, err = s.db.Exec("ALTER TABLE users ADD COLUMN otp_verified INTEGER DEFAULT 0")
-	if err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") && !strings.Contains(err.Error(), "duplicate column") {
-			return err
+		// Execute the migration SQL.
+		_, err = s.db.Exec(m.sql)
+		if err != nil {
+			// For ALTER TABLE ADD COLUMN, "duplicate column" means it was applied
+			// before the migration table existed (legacy system). Mark it applied.
+			if strings.Contains(err.Error(), "duplicate column") {
+				_ = s.recordMigration(m.version, m.name)
+				continue
+			}
+			return fmt.Errorf("migration v%d (%s) failed: %w", m.version, m.name, err)
+		}
+
+		// Record the migration.
+		if err := s.recordMigration(m.version, m.name); err != nil {
+			return fmt.Errorf("failed to record migration v%d: %w", m.version, err)
 		}
 	}
 
@@ -331,6 +348,35 @@ func (s *SQLiteStore) runMigrations() error {
 	}
 
 	return nil
+}
+
+// isMigrationApplied checks if a migration version has already been applied.
+func (s *SQLiteStore) isMigrationApplied(version int) (bool, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version = ?", version).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// recordMigration records a migration as applied.
+func (s *SQLiteStore) recordMigration(version int, name string) error {
+	_, err := s.db.Exec("INSERT INTO schema_migrations (version, name) VALUES (?, ?)", version, name)
+	return err
+}
+
+// GetMigrationVersion returns the current schema migration version.
+func (s *SQLiteStore) GetMigrationVersion() (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var version int
+	err := s.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&version)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get migration version: %w", err)
+	}
+	return version, nil
 }
 
 // initDefaultRoles creates the default system roles if they don't exist.
