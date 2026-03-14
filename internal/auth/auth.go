@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -350,9 +351,9 @@ func GenerateToken() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-// HashToken creates a SHA256 hash of a token.
+// HashToken creates a SHA-512 hash of a token.
 func HashToken(token string) string {
-	h := sha256.Sum256([]byte(token))
+	h := sha512.Sum512([]byte(token))
 	return hex.EncodeToString(h[:])
 }
 
