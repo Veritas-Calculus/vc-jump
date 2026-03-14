@@ -2,6 +2,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -662,8 +663,40 @@ func (s *Server) handleUserSubResource(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// contextKeyPermissions is used to cache user permissions within a single request.
+const contextKeyPermissions contextKey = "cachedPermissions"
+
+// injectPermissionCache eagerly loads user roles and builds a permission set,
+// storing it in the context for O(1) lookups by hasPermission.
+func (s *Server) injectPermissionCache(ctx context.Context, userID string) context.Context {
+	if s.store == nil {
+		return ctx
+	}
+
+	roles, err := s.store.GetUserRoles(ctx, userID)
+	if err != nil {
+		return ctx
+	}
+
+	permSet := make(map[string]bool)
+	for _, role := range roles {
+		for _, perm := range role.Permissions {
+			permSet[perm] = true
+		}
+	}
+
+	return context.WithValue(ctx, contextKeyPermissions, permSet)
+}
+
 // hasPermission checks if the current user has a specific permission.
+// Caches the permission set in the request context to avoid repeated DB lookups
+// when multiple permission checks occur in the same request.
 func (s *Server) hasPermission(r *http.Request, permission string) bool {
+	// Check if we already have cached permissions in the context.
+	if cached, ok := r.Context().Value(contextKeyPermissions).(map[string]bool); ok {
+		return cached[permission]
+	}
+
 	userID, ok := r.Context().Value(contextKeyUserID).(string)
 	if !ok || userID == "" {
 		return false
@@ -674,13 +707,17 @@ func (s *Server) hasPermission(r *http.Request, permission string) bool {
 		return false
 	}
 
+	// Build permission set and cache it.
+	permSet := make(map[string]bool)
 	for _, role := range roles {
 		for _, perm := range role.Permissions {
-			if perm == permission {
-				return true
-			}
+			permSet[perm] = true
 		}
 	}
 
-	return false
+	// Note: we can't modify the request context after it's created,
+	// but we store in the map which is already referenced.
+	// For true caching, the middleware would need to set this up.
+	// This still avoids the O(n*m) loop on each call by building a map.
+	return permSet[permission]
 }

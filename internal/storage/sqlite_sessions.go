@@ -209,6 +209,11 @@ func (s *SQLiteStore) CleanupStaleSessions(ctx context.Context) (int64, error) {
 	return rowsAffected, nil
 }
 
+// Ping verifies database connectivity with a lightweight check.
+func (s *SQLiteStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // Close closes the database connection.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()

@@ -2,7 +2,6 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -512,7 +510,7 @@ func (s *Server) verifyOTP(channel ssh.Channel, username string) bool {
 	_, _ = io.WriteString(channel, "Enter your 6-digit code: ")
 
 	// Read OTP code from user.
-	code, err := s.readLine(channel)
+	code, err := readLineMasked(channel)
 	if err != nil {
 		s.logger.Infof("failed to read OTP code: %v", err)
 		return false
@@ -532,46 +530,6 @@ func (s *Server) verifyOTP(channel ssh.Channel, username string) bool {
 
 	_, _ = io.WriteString(channel, "\r\n✓ OTP verified.\r\n\r\n")
 	return true
-}
-
-// readLine reads a line of input from the channel.
-func (s *Server) readLine(channel ssh.Channel) (string, error) {
-	reader := bufio.NewReader(channel)
-	var line strings.Builder
-
-	for {
-		b, err := reader.ReadByte()
-		if err != nil {
-			return "", err
-		}
-
-		// Handle Enter key.
-		if b == '\r' || b == '\n' {
-			break
-		}
-
-		// Handle backspace.
-		if b == 127 || b == 8 {
-			if line.Len() > 0 {
-				str := line.String()
-				line.Reset()
-				line.WriteString(str[:len(str)-1])
-				_, _ = channel.Write([]byte("\b \b"))
-			}
-			continue
-		}
-
-		// Ignore control characters.
-		if b < 32 {
-			continue
-		}
-
-		line.WriteByte(b)
-		// Echo asterisk for OTP input.
-		_, _ = channel.Write([]byte("*"))
-	}
-
-	return line.String(), nil
 }
 
 func (s *Server) logConnectEvent(username, sourceIP, hostName string) {
@@ -686,71 +644,26 @@ func (s *Server) loadProxyOptions(hostName string) *proxy.ConnectOptions {
 	}
 }
 
-type ptyRequest struct {
-	Term   string
-	Width  uint32
-	Height uint32
-}
-
-func parsePtyRequest(payload []byte) *ptyRequest {
-	if len(payload) < 4 {
-		return nil
-	}
-
-	termLen := int(payload[3])
-	if len(payload) < 4+termLen+8 {
-		return nil
-	}
-
-	term := string(payload[4 : 4+termLen])
-	rest := payload[4+termLen:]
-
-	if len(rest) < 8 {
-		return nil
-	}
-
-	width := uint32(rest[0])<<24 | uint32(rest[1])<<16 | uint32(rest[2])<<8 | uint32(rest[3])
-	height := uint32(rest[4])<<24 | uint32(rest[5])<<16 | uint32(rest[6])<<8 | uint32(rest[7])
-
-	return &ptyRequest{
-		Term:   term,
-		Width:  width,
-		Height: height,
-	}
-}
-
-func joinGroups(groups []string) string {
-	if len(groups) == 0 {
-		return ""
-	}
-	result := groups[0]
-	for i := 1; i < len(groups); i++ {
-		result += "," + groups[i]
-	}
-	return result
-}
-
-func splitGroups(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var groups []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == ',' {
-			groups = append(groups, s[start:i])
-			start = i + 1
+// isAdmin checks if a user has the admin role via RBAC.
+// Falls back to group membership check if no database is available.
+func (s *Server) isAdmin(username string, groups []string) bool {
+	// If we have a database, check RBAC roles.
+	if s.sqliteStore != nil {
+		ctx := context.Background()
+		user, err := s.sqliteStore.GetUserByUsername(ctx, username)
+		if err == nil {
+			userRoles, err := s.sqliteStore.GetUserRoles(ctx, user.ID)
+			if err == nil {
+				for _, role := range userRoles {
+					if role.Name == rbac.RoleAdmin {
+						return true
+					}
+				}
+			}
 		}
 	}
-	groups = append(groups, s[start:])
-	return groups
-}
 
-// isAdmin checks if user is in the admin group.
-func (s *Server) isAdmin(username string, groups []string) bool {
-	if username == "admin" {
-		return true
-	}
+	// Fallback: check group membership (for config-file-only mode).
 	for _, g := range groups {
 		if g == "admin" || g == "admins" {
 			return true
@@ -831,304 +744,6 @@ func (s *Server) filterHostsByRBAC(username string, hosts []config.HostConfig) [
 	}
 
 	return filtered
-}
-
-// runAdminConsole provides an interactive admin interface via SSH.
-func (s *Server) runAdminConsole(channel ssh.Channel, username string) {
-	_, _ = io.WriteString(channel, "\r\n=== VC Jump Admin Console ===\r\n")
-	_, _ = io.WriteString(channel, fmt.Sprintf("Logged in as: %s\r\n\r\n", username))
-
-	for {
-		_, _ = io.WriteString(channel, "\r\nAdmin Menu:\r\n")
-		_, _ = io.WriteString(channel, "  [1] List Hosts\r\n")
-		_, _ = io.WriteString(channel, "  [2] Add Host\r\n")
-		_, _ = io.WriteString(channel, "  [3] Delete Host\r\n")
-		_, _ = io.WriteString(channel, "  [4] List Users\r\n")
-		_, _ = io.WriteString(channel, "  [5] List SSH Keys\r\n")
-		_, _ = io.WriteString(channel, "  [Q] Exit\r\n")
-		_, _ = io.WriteString(channel, "\r\nSelect option: ")
-
-		choice, err := readLine(channel)
-		if err != nil {
-			return
-		}
-
-		switch choice {
-		case "1":
-			s.adminListHosts(channel)
-		case "2":
-			s.adminAddHost(channel)
-		case "3":
-			s.adminDeleteHost(channel)
-		case "4":
-			s.adminListUsers(channel)
-		case "5":
-			s.adminListKeys(channel)
-		case "q", "Q":
-			_, _ = io.WriteString(channel, "\r\nGoodbye!\r\n")
-			return
-		default:
-			_, _ = io.WriteString(channel, "\r\nInvalid option.\r\n")
-		}
-	}
-}
-
-func (s *Server) adminListHosts(channel ssh.Channel) {
-	if s.sqliteStore == nil {
-		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
-		return
-	}
-
-	hosts, err := s.sqliteStore.ListHosts(s.ctx)
-	if err != nil {
-		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
-		return
-	}
-
-	_, _ = io.WriteString(channel, "\r\n--- Hosts ---\r\n")
-	if len(hosts) == 0 {
-		_, _ = io.WriteString(channel, "No hosts configured.\r\n")
-		return
-	}
-
-	for i, h := range hosts {
-		keyInfo := ""
-		if h.KeyID != "" {
-			key, err := s.sqliteStore.GetSSHKey(s.ctx, h.KeyID)
-			if err == nil {
-				keyInfo = fmt.Sprintf(" [Key: %s]", key.Name)
-			}
-		}
-		_, _ = io.WriteString(channel, fmt.Sprintf("  %d. %s - %s@%s:%d%s\r\n", i+1, h.Name, h.User, h.Addr, h.Port, keyInfo))
-	}
-}
-
-func (s *Server) adminAddHost(channel ssh.Channel) {
-	if s.sqliteStore == nil {
-		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
-		return
-	}
-
-	_, _ = io.WriteString(channel, "\r\n--- Add Host ---\r\n")
-
-	name, addr, ok := s.promptHostBasicInfo(channel)
-	if !ok {
-		return
-	}
-
-	port := s.promptPort(channel)
-	user := s.promptUser(channel)
-	keyID := s.promptSSHKey(channel)
-
-	host := &storage.Host{
-		Name:  name,
-		Addr:  addr,
-		Port:  port,
-		User:  user,
-		KeyID: keyID,
-	}
-
-	if err := s.sqliteStore.CreateHost(s.ctx, host); err != nil {
-		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
-		return
-	}
-
-	_, _ = io.WriteString(channel, fmt.Sprintf("\r\nHost '%s' created successfully!\r\n", name))
-}
-
-func (s *Server) promptHostBasicInfo(channel ssh.Channel) (name, addr string, ok bool) {
-	_, _ = io.WriteString(channel, "Name: ")
-	name, err := readLine(channel)
-	if err != nil || name == "" {
-		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
-		return "", "", false
-	}
-
-	_, _ = io.WriteString(channel, "Address: ")
-	addr, err = readLine(channel)
-	if err != nil || addr == "" {
-		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
-		return "", "", false
-	}
-
-	return name, addr, true
-}
-
-func (s *Server) promptPort(channel ssh.Channel) int {
-	_, _ = io.WriteString(channel, "Port [22]: ")
-	portStr, _ := readLine(channel)
-	if portStr == "" {
-		return 22
-	}
-	if p, err := strconv.Atoi(portStr); err == nil && p > 0 {
-		return p
-	}
-	return 22
-}
-
-func (s *Server) promptUser(channel ssh.Channel) string {
-	_, _ = io.WriteString(channel, "SSH User [root]: ")
-	user, _ := readLine(channel)
-	if user == "" {
-		return "root"
-	}
-	return user
-}
-
-func (s *Server) promptSSHKey(channel ssh.Channel) string {
-	keys, _ := s.sqliteStore.ListSSHKeys(s.ctx)
-	if len(keys) == 0 {
-		return ""
-	}
-
-	_, _ = io.WriteString(channel, "\r\nAvailable SSH Keys:\r\n")
-	for i, k := range keys {
-		_, _ = io.WriteString(channel, fmt.Sprintf("  [%d] %s (%s)\r\n", i+1, k.Name, k.KeyType))
-	}
-	_, _ = io.WriteString(channel, "  [0] None\r\n")
-	_, _ = io.WriteString(channel, "\r\nSelect key [0]: ")
-
-	keyChoice, _ := readLine(channel)
-	if n, err := strconv.Atoi(keyChoice); err == nil && n >= 1 && n <= len(keys) {
-		return keys[n-1].ID
-	}
-	return ""
-}
-
-func (s *Server) adminDeleteHost(channel ssh.Channel) {
-	if s.sqliteStore == nil {
-		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
-		return
-	}
-
-	hosts, err := s.sqliteStore.ListHosts(s.ctx)
-	if err != nil {
-		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
-		return
-	}
-
-	if len(hosts) == 0 {
-		_, _ = io.WriteString(channel, "\r\nNo hosts to delete.\r\n")
-		return
-	}
-
-	_, _ = io.WriteString(channel, "\r\n--- Delete Host ---\r\n")
-	for i, h := range hosts {
-		_, _ = io.WriteString(channel, fmt.Sprintf("  [%d] %s (%s:%d)\r\n", i+1, h.Name, h.Addr, h.Port))
-	}
-	_, _ = io.WriteString(channel, "\r\nSelect host to delete (0 to cancel): ")
-
-	choice, err := readLine(channel)
-	if err != nil {
-		return
-	}
-
-	n, err := strconv.Atoi(choice)
-	if err != nil || n < 1 || n > len(hosts) {
-		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
-		return
-	}
-
-	hostToDelete := hosts[n-1]
-	_, _ = io.WriteString(channel, fmt.Sprintf("\r\nAre you sure you want to delete '%s'? (y/N): ", hostToDelete.Name))
-	confirm, _ := readLine(channel)
-	if confirm != "y" && confirm != "Y" {
-		_, _ = io.WriteString(channel, "\r\nCancelled.\r\n")
-		return
-	}
-
-	if err := s.sqliteStore.DeleteHost(s.ctx, hostToDelete.ID); err != nil {
-		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
-		return
-	}
-
-	_, _ = io.WriteString(channel, fmt.Sprintf("\r\nHost '%s' deleted successfully!\r\n", hostToDelete.Name))
-}
-
-func (s *Server) adminListUsers(channel ssh.Channel) {
-	if s.sqliteStore == nil {
-		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
-		return
-	}
-
-	users, err := s.sqliteStore.ListUsers(s.ctx)
-	if err != nil {
-		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
-		return
-	}
-
-	_, _ = io.WriteString(channel, "\r\n--- Users ---\r\n")
-	if len(users) == 0 {
-		_, _ = io.WriteString(channel, "No users configured.\r\n")
-		return
-	}
-
-	for i, u := range users {
-		status := "inactive"
-		if u.IsActive {
-			status = "active"
-		}
-		source := string(u.Source)
-		if source == "" {
-			source = "local"
-		}
-		_, _ = io.WriteString(channel, fmt.Sprintf("  %d. %s [%s] (%s)\r\n", i+1, u.Username, source, status))
-	}
-}
-
-func (s *Server) adminListKeys(channel ssh.Channel) {
-	if s.sqliteStore == nil {
-		_, _ = io.WriteString(channel, "\r\nDatabase not available.\r\n")
-		return
-	}
-
-	keys, err := s.sqliteStore.ListSSHKeys(s.ctx)
-	if err != nil {
-		_, _ = io.WriteString(channel, fmt.Sprintf("\r\nError: %v\r\n", err))
-		return
-	}
-
-	_, _ = io.WriteString(channel, "\r\n--- SSH Keys ---\r\n")
-	if len(keys) == 0 {
-		_, _ = io.WriteString(channel, "No SSH keys configured.\r\n")
-		return
-	}
-
-	for i, k := range keys {
-		_, _ = io.WriteString(channel, fmt.Sprintf("  %d. %s (%s) - %s\r\n", i+1, k.Name, k.KeyType, k.Fingerprint))
-	}
-}
-
-// readLine reads a line from the SSH channel.
-func readLine(r io.Reader) (string, error) {
-	var line []byte
-	buf := make([]byte, 1)
-
-	for {
-		n, err := r.Read(buf)
-		if err != nil {
-			return "", err
-		}
-		if n == 0 {
-			continue
-		}
-
-		b := buf[0]
-		switch b {
-		case '\r', '\n':
-			return string(line), nil
-		case 127, 8: // Backspace.
-			if len(line) > 0 {
-				line = line[:len(line)-1]
-			}
-		case 3: // Ctrl+C
-			return "", errors.New("interrupted")
-		default:
-			if b >= 32 && b < 127 {
-				line = append(line, b)
-			}
-		}
-	}
 }
 
 // logAudit logs an audit event to SQLite storage.

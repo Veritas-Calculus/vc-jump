@@ -27,11 +27,11 @@ const (
 
 // Manager handles SSH key operations.
 type Manager struct {
-	store *storage.SQLiteStore
+	store storage.SSHKeyStore
 }
 
 // New creates a new SSH key manager.
-func New(store *storage.SQLiteStore) *Manager {
+func New(store storage.SSHKeyStore) *Manager {
 	return &Manager{store: store}
 }
 

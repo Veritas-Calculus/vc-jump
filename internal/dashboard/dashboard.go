@@ -28,7 +28,7 @@ var staticFiles embed.FS
 type Server struct {
 	cfg          DashboardConfig
 	authCfg      config.AuthConfig
-	store        *storage.SQLiteStore
+	store        storage.Store
 	auth         *auth.Authenticator
 	session      *auth.SessionManager
 	keyManager   *sshkey.Manager
@@ -37,6 +37,7 @@ type Server struct {
 	logger       *logger.Logger
 	mux          *http.ServeMux
 	server       *http.Server
+	cleanupStop  chan struct{}
 
 	ipLimiters    map[string]*rate.Limiter
 	tokenLimiters map[string]*rate.Limiter
@@ -65,25 +66,26 @@ type ActiveSessionInfo struct {
 
 // DashboardConfig holds dashboard configuration.
 type DashboardConfig struct {
-	ListenAddr     string
-	SessionTimeout time.Duration
-	EnableHTTPS    bool
-	CertFile       string
-	KeyFile        string
+	ListenAddr         string
+	SessionTimeout     time.Duration
+	EnableHTTPS        bool
+	CertFile           string
+	KeyFile            string
+	AuditRetentionDays int // Days to retain audit logs; 0 disables cleanup.
 }
 
 // New creates a new dashboard server.
-func New(cfg DashboardConfig, store *storage.SQLiteStore, authCfg config.AuthConfig) (*Server, error) {
+func New(cfg DashboardConfig, store storage.Store, authCfg config.AuthConfig) (*Server, error) {
 	return NewWithRecording(cfg, store, authCfg, config.RecordingConfig{})
 }
 
 // NewWithRecording creates a new dashboard server with recording support.
-func NewWithRecording(cfg DashboardConfig, store *storage.SQLiteStore, authCfg config.AuthConfig, recordingCfg config.RecordingConfig) (*Server, error) {
+func NewWithRecording(cfg DashboardConfig, store storage.Store, authCfg config.AuthConfig, recordingCfg config.RecordingConfig) (*Server, error) {
 	return NewWithRecorder(cfg, store, authCfg, recordingCfg, nil)
 }
 
 // NewWithRecorder creates a new dashboard server with a recorder for live session viewing.
-func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg config.AuthConfig, recordingCfg config.RecordingConfig, recorder RecorderInterface) (*Server, error) {
+func NewWithRecorder(cfg DashboardConfig, store storage.Store, authCfg config.AuthConfig, recordingCfg config.RecordingConfig, recorder RecorderInterface) (*Server, error) {
 	authenticator, err := auth.NewWithStore(authCfg, store)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create authenticator: %w", err)
@@ -118,6 +120,12 @@ func NewWithRecorder(cfg DashboardConfig, store *storage.SQLiteStore, authCfg co
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
+
+	// Start background cleanup for rate limiter maps.
+	go s.cleanupLimiters()
+
+	// Start background maintenance tasks (token cleanup, audit retention, session cleanup).
+	s.startCleanupScheduler(cfg.AuditRetentionDays)
 
 	return s, nil
 }
@@ -334,6 +342,24 @@ func getClientIP(r *http.Request) string {
 	return ip
 }
 
+// cleanupLimiters periodically removes stale rate limiter entries.
+func (s *Server) cleanupLimiters() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.limitersMu.Lock()
+		// Reset maps to reclaim memory from stale IPs/tokens.
+		// Active clients will simply get new limiters on next request.
+		if len(s.ipLimiters) > 1000 {
+			s.ipLimiters = make(map[string]*rate.Limiter)
+		}
+		if len(s.tokenLimiters) > 1000 {
+			s.tokenLimiters = make(map[string]*rate.Limiter)
+		}
+		s.limitersMu.Unlock()
+	}
+}
+
 // securityHeaders adds security headers to all responses.
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +414,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			ctx := context.WithValue(r.Context(), contextKeyUserID, userID)
 			ctx = context.WithValue(ctx, contextKeyAuthType, "api_key")
 			ctx = context.WithValue(ctx, contextKeyScopes, scopes)
+			ctx = s.injectPermissionCache(ctx, userID)
 
 			// Set header for logger to extract.
 			w.Header().Set("X-User-ID", userID)
@@ -406,6 +433,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Add user ID to context.
 		ctx := context.WithValue(r.Context(), contextKeyUserID, userID)
 		ctx = context.WithValue(ctx, contextKeyAuthType, "session")
+		ctx = s.injectPermissionCache(ctx, userID)
 
 		// Set header for logger to extract.
 		w.Header().Set("X-User-ID", userID)
@@ -530,7 +558,12 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := r.Context().Value(contextKeyUserID).(string)
+	userID, ok := r.Context().Value(contextKeyUserID).(string)
+	if !ok || userID == "" {
+		s.jsonError(w, "user not found", http.StatusUnauthorized)
+		return
+	}
+
 	user, err := s.store.GetUser(r.Context(), userID)
 	if err != nil {
 		s.jsonError(w, "user not found", http.StatusNotFound)
@@ -680,11 +713,10 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify DB is accessible with a quick read.
+	// Lightweight DB connectivity check.
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	_, err := s.store.ListUsers(ctx)
-	if err != nil {
+	if err := s.store.Ping(ctx); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte(`{"status":"not ready","reason":"database unreachable"}`))

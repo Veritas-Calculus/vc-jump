@@ -21,6 +21,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
 )
 
 // Storage defines the interface for recording storage backends.
@@ -697,6 +698,5 @@ func (w *recordingWrapper) Close() error {
 }
 
 func generateSessionID() string {
-	now := time.Now().UnixNano()
-	return fmt.Sprintf("%x", now)
+	return uuid.New().String()
 }

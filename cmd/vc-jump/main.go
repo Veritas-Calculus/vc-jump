@@ -188,11 +188,12 @@ func startDashboard(cfg *config.Config, store *storage.SQLiteStore, srv *server.
 	}
 
 	dashboardCfg := dashboard.DashboardConfig{
-		ListenAddr:     cfg.Dashboard.ListenAddr,
-		SessionTimeout: sessionTimeout,
-		EnableHTTPS:    cfg.Dashboard.EnableHTTPS,
-		CertFile:       cfg.Dashboard.CertFile,
-		KeyFile:        cfg.Dashboard.KeyFile,
+		ListenAddr:         cfg.Dashboard.ListenAddr,
+		SessionTimeout:     sessionTimeout,
+		EnableHTTPS:        cfg.Dashboard.EnableHTTPS,
+		CertFile:           cfg.Dashboard.CertFile,
+		KeyFile:            cfg.Dashboard.KeyFile,
+		AuditRetentionDays: cfg.Audit.RetentionDays,
 	}
 
 	var recorderAdapter dashboard.RecorderInterface
@@ -217,7 +218,7 @@ func startDashboard(cfg *config.Config, store *storage.SQLiteStore, srv *server.
 }
 
 func setupGracefulShutdown(srv *server.Server, dashboardServer *dashboard.Server) {
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
@@ -250,10 +251,7 @@ func setupGracefulShutdown(srv *server.Server, dashboardServer *dashboard.Server
 
 	// Second signal = force exit.
 	go func() {
-		sigCh2 := make(chan os.Signal, 1)
-		signal.Notify(sigCh2, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh2 // first signal handled above
-		<-sigCh2 // second signal = force
+		<-sigCh // second signal (first is consumed above)
 		log.Println("forced shutdown (second signal received)")
 		os.Exit(1)
 	}()

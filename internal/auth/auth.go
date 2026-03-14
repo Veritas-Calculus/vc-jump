@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,22 +34,27 @@ type User struct {
 // Authenticator handles user authentication.
 type Authenticator struct {
 	cfg   config.AuthConfig
-	store *storage.SQLiteStore
+	store storage.Store
 	cache *authCache
 }
+
+const (
+	// maxCacheEntries is the maximum number of entries in the auth cache.
+	maxCacheEntries = 10000
+	// cacheCleanupInterval is how often expired entries are evicted.
+	cacheCleanupInterval = 5 * time.Minute
+)
 
 type authCache struct {
 	path    string
 	entries map[string]*User
 	mu      sync.RWMutex
+	stopCh  chan struct{}
 }
 
 // New creates a new Authenticator with the given configuration (legacy support).
 func New(cfg config.AuthConfig) (*Authenticator, error) {
-	cache := &authCache{
-		path:    cfg.CachePath,
-		entries: make(map[string]*User),
-	}
+	cache := newAuthCache(cfg.CachePath)
 
 	// Ensure cache directory exists.
 	if cfg.CachePath != "" {
@@ -66,10 +70,8 @@ func New(cfg config.AuthConfig) (*Authenticator, error) {
 }
 
 // NewWithStore creates a new Authenticator with database store.
-func NewWithStore(cfg config.AuthConfig, store *storage.SQLiteStore) (*Authenticator, error) {
-	cache := &authCache{
-		entries: make(map[string]*User),
-	}
+func NewWithStore(cfg config.AuthConfig, store storage.Store) (*Authenticator, error) {
+	cache := newAuthCache("")
 
 	return &Authenticator{
 		cfg:   cfg,
@@ -246,15 +248,75 @@ func (a *Authenticator) authenticateSSO(_ context.Context, username, password st
 	return nil, errors.New("SSO authentication not implemented")
 }
 
+func newAuthCache(path string) *authCache {
+	c := &authCache{
+		path:    path,
+		entries: make(map[string]*User),
+		stopCh:  make(chan struct{}),
+	}
+	go c.cleanupLoop()
+	return c
+}
+
+// cleanupLoop periodically evicts expired cache entries.
+func (c *authCache) cleanupLoop() {
+	ticker := time.NewTicker(cacheCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			c.evictExpired()
+		case <-c.stopCh:
+			return
+		}
+	}
+}
+
+// evictExpired removes all expired entries from the cache.
+func (c *authCache) evictExpired() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	for key, user := range c.entries {
+		if !user.ExpiresAt.IsZero() && now.After(user.ExpiresAt) {
+			delete(c.entries, key)
+		}
+	}
+}
+
 func (c *authCache) get(key string) *User {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.entries[key]
+	user, ok := c.entries[key]
+	if !ok {
+		return nil
+	}
+	// Check expiry on read.
+	if !user.ExpiresAt.IsZero() && time.Now().After(user.ExpiresAt) {
+		return nil
+	}
+	return user
 }
 
 func (c *authCache) set(key string, user *User) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Enforce max cache size: if at limit, evict expired first, then oldest.
+	if len(c.entries) >= maxCacheEntries {
+		now := time.Now()
+		for k, u := range c.entries {
+			if !u.ExpiresAt.IsZero() && now.After(u.ExpiresAt) {
+				delete(c.entries, k)
+			}
+		}
+		// If still at limit after evicting expired, drop a random entry.
+		if len(c.entries) >= maxCacheEntries {
+			for k := range c.entries {
+				delete(c.entries, k)
+				break
+			}
+		}
+	}
 	c.entries[key] = user
 }
 
@@ -302,12 +364,12 @@ func VerifyToken(token, hash string) bool {
 
 // SessionManager manages user sessions.
 type SessionManager struct {
-	store           *storage.SQLiteStore
+	store           storage.Store
 	sessionDuration time.Duration
 }
 
 // NewSessionManager creates a new session manager.
-func NewSessionManager(store *storage.SQLiteStore, duration time.Duration) *SessionManager {
+func NewSessionManager(store storage.Store, duration time.Duration) *SessionManager {
 	return &SessionManager{
 		store:           store,
 		sessionDuration: duration,
@@ -397,6 +459,3 @@ func (tm *TOTPManager) GetProvisioningURI(username, secret string) string {
 	return fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s",
 		tm.issuer, username, secret, tm.issuer)
 }
-
-// Unused variable to prevent import error.
-var _ = filepath.Join

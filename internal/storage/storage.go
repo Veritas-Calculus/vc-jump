@@ -148,6 +148,8 @@ type HostStore interface {
 	GetHost(ctx context.Context, id string) (*Host, error)
 	GetHostByName(ctx context.Context, name string) (*Host, error)
 	ListHosts(ctx context.Context) ([]Host, error)
+	ListHostsPaginated(ctx context.Context, limit, offset int) ([]Host, error)
+	CountHosts(ctx context.Context) (int, error)
 	CreateHost(ctx context.Context, host *Host) error
 	UpdateHost(ctx context.Context, host *Host) error
 	DeleteHost(ctx context.Context, id string) error
@@ -159,6 +161,8 @@ type UserStore interface {
 	GetUser(ctx context.Context, id string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	ListUsers(ctx context.Context) ([]User, error)
+	ListUsersPaginated(ctx context.Context, limit, offset int) ([]User, error)
+	CountUsers(ctx context.Context) (int, error)
 	CreateUser(ctx context.Context, user *User) error
 	UpdateUser(ctx context.Context, user *User) error
 	DeleteUser(ctx context.Context, id string) error
@@ -172,6 +176,7 @@ type UserStore interface {
 type SessionStore interface {
 	GetSession(ctx context.Context, id string) (*Session, error)
 	ListSessions(ctx context.Context, username string, limit int) ([]Session, error)
+	CountSessions(ctx context.Context) (int, error)
 	CreateSession(ctx context.Context, session *Session) error
 	UpdateSession(ctx context.Context, session *Session) error
 	ListActiveSessions(ctx context.Context) ([]Session, error)
@@ -295,6 +300,7 @@ type Store interface {
 	RecordingStore
 
 	// Lifecycle.
+	Ping(ctx context.Context) error
 	Close() error
 }
 
