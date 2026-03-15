@@ -355,7 +355,7 @@ func (s *Server) validateAPIKey(r *http.Request, token string) (string, []string
 	// Update last used timestamp (fire-and-forget, using detached context
 	// since the request context will be cancelled when the handler returns).
 	keyID := key.ID
-	go func() {
+	go func() { //nolint:gosec // G118: intentional — goroutine outlives request context
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = s.store.UpdateApiKeyLastUsed(ctx, keyID)

@@ -222,8 +222,11 @@ func (a *Authenticator) verifyUserPublicKey(user *storage.User, fingerprint stri
 // This is a fixed key used only for cache indexing, not for security.
 var cacheKeyHMACSecret = []byte("vc-jump-cache-key-v1")
 
+// cacheKey generates a cache lookup key from credentials.
+// This is NOT password storage — passwords are verified via bcrypt in the database.
+// The HMAC here is only used as a deterministic index for the auth cache.
 func (a *Authenticator) cacheKey(username, password string) string {
-	h := hmac.New(sha256.New, cacheKeyHMACSecret)
+	h := hmac.New(sha256.New, cacheKeyHMACSecret) // lgtm[go/weak-sensitive-data-hashing]
 	h.Write([]byte(username))
 	h.Write([]byte(":"))
 	h.Write([]byte(password))
@@ -351,9 +354,11 @@ func GenerateToken() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-// HashToken creates a SHA-512 hash of a token.
+// HashToken creates a SHA-512 hash of a random session token.
+// This is NOT password hashing — tokens are cryptographically random bytes.
+// SHA-512 is appropriate for token hashing as there's no brute-force risk.
 func HashToken(token string) string {
-	h := sha512.Sum512([]byte(token))
+	h := sha512.Sum512([]byte(token)) // lgtm[go/weak-sensitive-data-hashing]
 	return hex.EncodeToString(h[:])
 }
 
