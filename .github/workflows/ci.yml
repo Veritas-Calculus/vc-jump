@@ -70,7 +70,7 @@ jobs:
           cache: true
 
       - name: Run Gosec
-        uses: securego/gosec@v2.24.7
+        uses: securego/gosec@v2.25.0
         with:
           args: '-no-fail -fmt sarif -out results.sarif ./...'
 
